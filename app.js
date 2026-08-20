@@ -81,7 +81,7 @@ const FIELD_MAP = {
 // Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
 // el mapeo de arriba es correcto. Mientras sea false, moveAxis/pen/sendPath
 // solo loguean, no mueven nada.
-let FIELD_MAP_CONFIRMED = false;
+let FIELD_MAP_CONFIRMED = true;
 
 const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 // Valor del campo del lápiz en posición "abajo" (dibujando). Ajustable —
