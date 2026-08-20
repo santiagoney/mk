@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <title>MK 13181 Plotter</title>
+</head>
+<body>
+<header>
+  <h1>Mould King 13181</h1>
+  <span id="status" class="status offline">BLE desconectado</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1. Bluetooth</h2>
+    <button id="connectBtn">Conectar</button>
+    <button id="disconnectBtn" disabled>Desconectar</button>
+    <p id="bleInfo">
+      Al conectar se reproduce automáticamente la secuencia de arranque real
+      capturada. El mapeo de movimiento todavía no está confirmado — usá la
+      consola de abajo para probarlo con cuidado, un comando a la vez.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>1.5. Consola BLE (crudo)</h2>
+    <p>
+      Mandá comandos de texto tal cual, en el formato <code>T&lt;código&gt;W</code>
+      visto en la captura. Cada respuesta y cada envío quedan en el log de
+      abajo. Ideal para aislar el mapeo de movimiento: movés un eje de a un
+      paso chico en la app oficial mientras esta consola está conectada en
+      paralelo, y comparás qué cambió.
+    </p>
+    <div class="console-row">
+      <input id="rawCmd" type="text" placeholder="p.ej. T1440000000..." spellcheck="false">
+      <button id="rawSendBtn">Enviar</button>
+    </div>
+    <div class="console-row">
+      <span class="console-label">Réplicas capturadas:</span>
+      <button class="chip" data-replay="T041AABBW">handshake 1</button>
+      <button class="chip" data-replay="T00CW">handshake 2</button>
+      <button class="chip" data-replay="T006W">status</button>
+      <button class="chip" data-replay="T01F1W">handshake 3</button>
+    </div>
+
+    <div class="console-row">
+      <span class="console-label">Identificar motores:</span>
+      <button class="chip" data-probe="A">probar campo A</button>
+      <button class="chip" data-probe="B">probar campo B</button>
+      <button class="chip" data-probe="C">probar campo C</button>
+    </div>
+    <p class="hint">
+      Apretá cada uno con el plotter conectado y anotá qué motor se mueve
+      (A/B/C → X / Y / lápiz). Ajustá <code>FIELD_MAP</code> en
+      <code>app.js</code> y poné <code>FIELD_MAP_CONFIRMED = true</code>.
+      Hasta entonces el jog, el lápiz y el envío solo escriben en el log,
+      no mueven el plotter — es la red de seguridad para no mandar un
+      movimiento al motor equivocado.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>2. Calibración</h2>
+    <p>Mové cada eje manualmente con los botones. Guardamos una posición relativa en pasos; todavía no se envían comandos reales al plotter.</p>
+
+    <div class="axis">
+      <h3>Eje X</h3>
+      <div class="jog">
+        <button data-jog="x" data-dir="-1">←</button>
+        <button data-jog="x" data-dir="1">→</button>
+      </div>
+      <label>Mín <input id="xmin" type="number" value="0"></label>
+      <label>Máx <input id="xmax" type="number" value="1000"></label>
+      <output id="xpos">X = 0</output>
+    </div>
+
+    <div class="axis">
+      <h3>Eje Y</h3>
+      <div class="jog">
+        <button data-jog="y" data-dir="-1">↑</button>
+        <button data-jog="y" data-dir="1">↓</button>
+      </div>
+      <label>Mín <input id="ymin" type="number" value="0"></label>
+      <label>Máx <input id="ymax" type="number" value="1000"></label>
+      <output id="ypos">Y = 0</output>
+    </div>
+
+    <div class="axis">
+      <h3>Lápiz</h3>
+      <button id="penUp">Subir</button>
+      <button id="penDown">Bajar</button>
+      <output id="penState">Arriba</output>
+    </div>
+
+    <button id="saveCalibration">Guardar calibración</button>
+    <button id="resetCalibration" class="secondary">Restablecer</button>
+  </section>
+
+  <section class="card">
+    <h2>3. Imagen</h2>
+    <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp">
+    <div class="preview-wrap">
+      <canvas id="preview" width="600" height="400"></canvas>
+    </div>
+    <label>
+      Umbral
+      <input id="threshold" type="range" min="0" max="255" value="180">
+      <output id="thresholdValue">180</output>
+    </label>
+    <label>
+      Escala (%)
+      <input id="scale" type="range" min="10" max="100" value="80">
+      <output id="scaleValue">80%</output>
+    </label>
+    <button id="vectorizeBtn" disabled>Preparar trazado</button>
+  </section>
+
+  <section class="card">
+    <h2>4. Trazado</h2>
+    <div id="plotInfo">No hay trazado preparado.</div>
+    <button id="simulateBtn" disabled>Simular movimientos</button>
+    <button id="sendBtn" disabled>Enviar al plotter</button>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

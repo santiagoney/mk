@@ -1,0 +1,462 @@
+// Mould King 13181 plotter PWA
+// BLE protocol is intentionally isolated in MKBleAdapter.
+// Once the real UUIDs/commands are captured, only that class needs changing.
+
+const state = {
+  pos: { x: 0, y: 0 },
+  // Límites en UNIDADES DE MÁQUINA (campos 0..65535). El default es el rango
+  // observado en la captura; recalibralo con el jog para tu unidad real.
+  limits: { x: [0, 61000], y: [0, 61000] },
+  pen: false,
+  image: null,
+  path: []
+};
+
+const $ = id => document.getElementById(id);
+const log = msg => {
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  $("log").textContent += line + "\n";
+  $("log").scrollTop = $("log").scrollHeight;
+};
+
+/**
+ * Protocolo MK 13181 (módulo MKH4.0) — extraído de una captura HCI real
+ * (nRF/Android → Wireshark, filtro btatt) el 20 ago 2026.
+ *
+ * CONFIRMADO por la captura:
+ *   - Service:            0000ae3a-0000-1000-8000-00805f9b34fb
+ *   - Característica TX:  0000ae3b-0000-1000-8000-00805f9b34fb  (Write Command,
+ *     osea writeValueWithoutResponse — la app oficial nunca espera respuesta GATT)
+ *   - Característica RX:  0000ae3c-0000-1000-8000-00805f9b34fb  (Notify)
+ *   - Framing: texto ASCII plano, "T" + código/payload + "W". Nada de binario
+ *     empaquetado — se puede armar y leer a mano.
+ *   - Después de CADA notificación recibida, la app oficial responde con un
+ *     byte crudo 0x01 (NO envuelto en T...W) antes de mandar el próximo
+ *     comando. Sin ese ACK el módulo puede dejar de notificar.
+ *   - Secuencia de arranque real (se manda una sola vez, apenas conecta):
+ *       TX  T041AABBW
+ *       RX  T01711W          -> TX 0x01
+ *       TX  T00CW
+ *       RX  T027C08W         -> TX 0x01
+ *       TX  T006W
+ *       RX  T23760101+0064B540-017D7840+0007A12006A8W   (reporte de posición)
+ *                            -> TX 0x01
+ *       TX  T01F1W
+ *       RX  T017F1W          -> TX 0x01
+ *
+ * MOVIMIENTO — estructura CONFIRMADA por la captura (93/93 frames encajan):
+ *   "T1440" + AAAA + "0" + BBBB + "0" + CCCC + "00000" + "W"
+ *   -> tres campos hex de 16 bits (0..65535). En la captura cada tanda movió
+ *      UN solo campo a la vez, con rampa monótona que sube y vuelve a 0 =>
+ *      son POSICIONES ABSOLUTAS por motor, no velocidades. El módulo MKH4.0
+ *      tiene 3 motores, así que A/B/C = los 3 ejes (X, Y, lápiz).
+ *
+ * LO QUE LA CAPTURA NO DICE (y por eso NO lo adivinamos):
+ *   - Cuál de A/B/C es X, cuál Y, cuál lápiz. -> FIELD_MAP abajo es una
+ *     conjetura que VOS confirmás empíricamente con los botones "probar
+ *     campo A/B/C" de la consola: mandá un movimiento chico y mirá qué motor
+ *     se mueve, después ajustás FIELD_MAP. Hasta confirmarlo, moveAxis avisa.
+ *   - El máximo físico real (en la captura el campo llegó a ~61600, pero no
+ *     sabemos si es el tope o solo hasta donde se movió). Por eso el jog
+ *     manda pasos RELATIVOS chicos y vos definís los límites calibrando.
+ *   - Qué son T041AABBW / T00CW / T006W / T01F1W (handshake — se reproducen
+ *     tal cual, no hace falta entenderlos para que funcionen).
+ */
+const MK_CONFIG = {
+  serviceUUID: "0000ae3a-0000-1000-8000-00805f9b34fb",
+  writeCharUUID: "0000ae3b-0000-1000-8000-00805f9b34fb",
+  notifyCharUUID: "0000ae3c-0000-1000-8000-00805f9b34fb",
+};
+
+// Secuencia de arranque capturada, tal cual — ver comentario de arriba.
+const MK_HANDSHAKE = ["T041AABBW", "T00CW", "T006W", "T01F1W"];
+
+// Conjetura de mapeo campo->eje. VERIFICAR con los botones de la consola y
+// corregir acá. field: "A" | "B" | "C". invert: si el motor va al revés.
+const FIELD_MAP = {
+  x: { field: "A", invert: false },
+  y: { field: "B", invert: false },
+  pen: { field: "C", invert: false },
+};
+// Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
+// el mapeo de arriba es correcto. Mientras sea false, moveAxis/pen/sendPath
+// solo loguean, no mueven nada.
+let FIELD_MAP_CONFIRMED = false;
+
+const MK_MAX = 0xffff; // techo del campo hex de 16 bits
+// Valor del campo del lápiz en posición "abajo" (dibujando). Ajustable —
+// arrancá conservador y subilo hasta que apoye sin forzar.
+const PEN_DOWN_VALUE = 20000;
+
+/** Construye un frame de movimiento absoluto a partir de 3 posiciones
+ * (0..65535). Estructura confirmada por la captura. */
+function buildMoveFrame(a, b, c) {
+  const h = (n) =>
+    Math.max(0, Math.min(MK_MAX, Math.round(n)))
+      .toString(16)
+      .toUpperCase()
+      .padStart(4, "0");
+  return `T1440${h(a)}0${h(b)}0${h(c)}00000W`;
+}
+
+/** Posición absoluta actual de cada campo, como la manda el módulo. */
+const machinePos = { A: 0, B: 0, C: 0 };
+
+function fieldFor(axis) {
+  return FIELD_MAP[axis].field;
+}
+
+class MKBleAdapter {
+  constructor() {
+    this.device = null;
+    this.server = null;
+    this.writeChar = null;
+    this.notifyChar = null;
+    this.connected = false;
+  }
+
+  async connect() {
+    if (!navigator.bluetooth) {
+      throw new Error("Web Bluetooth no está disponible en este navegador.");
+    }
+
+    this.device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [MK_CONFIG.serviceUUID],
+    });
+
+    this.device.addEventListener("gattserverdisconnected", () => {
+      this.connected = false;
+      setBleUI(false);
+      log("Dispositivo desconectado.");
+    });
+
+    this.server = await this.device.gatt.connect();
+    const service = await this.server.getPrimaryService(MK_CONFIG.serviceUUID);
+    this.writeChar = await service.getCharacteristic(MK_CONFIG.writeCharUUID);
+    this.notifyChar = await service.getCharacteristic(MK_CONFIG.notifyCharUUID);
+
+    await this.notifyChar.startNotifications();
+    this.notifyChar.addEventListener("characteristicvaluechanged", (ev) =>
+      this._handleNotify(ev)
+    );
+
+    this.connected = true;
+    setBleUI(true);
+    log(`Conectado: ${this.device.name || "dispositivo sin nombre"}`);
+
+    await this._runHandshake();
+  }
+
+  async disconnect() {
+    if (this.device?.gatt?.connected) this.device.gatt.disconnect();
+    this.connected = false;
+    setBleUI(false);
+  }
+
+  async _runHandshake() {
+    log("ejecutando secuencia de arranque capturada…");
+    for (const cmd of MK_HANDSHAKE) {
+      await this.sendRawCommand(cmd);
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    log("arranque enviado. Los siguientes comandos son experimentales — usá la consola.");
+  }
+
+  _handleNotify(event) {
+    const bytes = new Uint8Array(event.target.value.buffer);
+    let text;
+    try {
+      text = new TextDecoder("ascii").decode(bytes);
+    } catch {
+      text = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    }
+    log(`< ${text}`);
+    // La app oficial confirma cada notificación con un byte 0x01 crudo.
+    this._writeRaw(new Uint8Array([0x01]));
+  }
+
+  async _writeRaw(bytes) {
+    if (!this.connected || !this.writeChar) {
+      log("  (no enviado — sin conexión BLE activa)");
+      return;
+    }
+    try {
+      await this.writeChar.writeValueWithoutResponse(bytes);
+    } catch (err) {
+      log(`  error al escribir: ${err.message}`);
+    }
+  }
+
+  /** Manda un comando de texto crudo, ya envuelto (p.ej. "T006W") tal cual
+   * se vio en la captura. Usado por la consola manual y por el handshake. */
+  async sendRawCommand(text) {
+    log(`> ${text}`);
+    await this._writeRaw(new TextEncoder().encode(text));
+  }
+
+  /** Escribe el frame que refleja machinePos actual. */
+  async _emitFrame() {
+    const frame = buildMoveFrame(machinePos.A, machinePos.B, machinePos.C);
+    await this.sendRawCommand(frame);
+  }
+
+  /** Prueba de identificación: mueve UN campo (A/B/C) una cantidad chica y
+   * vuelve a 0, para que veas a ojo qué motor responde. No depende de
+   * FIELD_MAP — es justamente lo que se usa para armarlo. */
+  async probeField(field, amount = 8000) {
+    if (!this.connected) return log("conectá primero.");
+    const prev = { ...machinePos };
+    machinePos.A = machinePos.B = machinePos.C = 0;
+    machinePos[field] = amount;
+    log(`probando campo ${field} -> ${amount} (mirá qué motor se mueve)`);
+    await this._emitFrame();
+    await new Promise((r) => setTimeout(r, 600));
+    machinePos[field] = 0;
+    await this._emitFrame();
+    Object.assign(machinePos, prev);
+  }
+
+  async sendMove(axis, direction, step = 3000) {
+    if (!FIELD_MAP_CONFIRMED) {
+      log(`MOVE ${axis} dir=${direction} — confirmá FIELD_MAP primero (consola: probar campos). No se envía.`);
+      return;
+    }
+    const { field, invert } = FIELD_MAP[axis];
+    const delta = direction * step * (invert ? -1 : 1);
+    machinePos[field] = Math.max(0, Math.min(MK_MAX, machinePos[field] + delta));
+    await this._emitFrame();
+  }
+
+  /** Mueve a una posición absoluta de máquina (A/B para X/Y). */
+  async moveToMachine(a, b) {
+    if (!FIELD_MAP_CONFIRMED) return;
+    const fx = fieldFor("x"), fy = fieldFor("y");
+    machinePos[fx] = Math.max(0, Math.min(MK_MAX, a));
+    machinePos[fy] = Math.max(0, Math.min(MK_MAX, b));
+    await this._emitFrame();
+  }
+
+  async pen(up) {
+    if (!FIELD_MAP_CONFIRMED) {
+      log(`PEN ${up ? "UP" : "DOWN"} — confirmá FIELD_MAP primero. No se envía.`);
+      return;
+    }
+    const { field, invert } = FIELD_MAP.pen;
+    // up = campo en 0, down = campo en su valor de trabajo (ajustable).
+    const down = invert ? 0 : PEN_DOWN_VALUE;
+    const upv = invert ? PEN_DOWN_VALUE : 0;
+    machinePos[field] = up ? upv : down;
+    await this._emitFrame();
+  }
+
+  async sendPath(path) {
+    if (!FIELD_MAP_CONFIRMED) {
+      log("Envío bloqueado: confirmá FIELD_MAP antes de mandar un trazado completo.");
+      return;
+    }
+    log(`enviando ${path.length} comandos…`);
+    for (const p of path) {
+      if (p.type === "pen") {
+        await this.pen(!p.down);
+      } else {
+        await this.moveToMachine(p.a, p.b);
+      }
+      // ritmo similar al de la app oficial (~100 ms entre frames)
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await this.pen(true);
+    log("trazado enviado.");
+  }
+}
+
+const ble = new MKBleAdapter();
+
+function setBleUI(on) {
+  $("status").textContent = on ? "BLE conectado" : "BLE desconectado";
+  $("status").className = "status " + (on ? "online" : "offline");
+  $("connectBtn").disabled = on;
+  $("disconnectBtn").disabled = !on;
+  $("sendBtn").disabled = !(on && state.path.length);
+}
+
+function updatePosition(axis, delta) {
+  const [min, max] = state.limits[axis];
+  state.pos[axis] = Math.max(min, Math.min(max, state.pos[axis] + delta));
+  $(`${axis}pos`).textContent = `${axis.toUpperCase()} = ${state.pos[axis]}`;
+}
+
+document.querySelectorAll("[data-jog]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const axis = btn.dataset.jog;
+    const dir = Number(btn.dataset.dir);
+    updatePosition(axis, dir * 10);
+    await ble.sendMove(axis, dir);
+  });
+});
+
+$("connectBtn").onclick = async () => {
+  try { await ble.connect(); }
+  catch (e) { log("Error BLE: " + e.message); }
+};
+
+$("disconnectBtn").onclick = () => ble.disconnect();
+
+$("rawSendBtn").onclick = async () => {
+  const text = $("rawCmd").value.trim();
+  if (!text) return;
+  await ble.sendRawCommand(text);
+};
+$("rawCmd").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("rawSendBtn").click();
+});
+document.querySelectorAll("[data-replay]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    await ble.sendRawCommand(btn.dataset.replay);
+  });
+});
+document.querySelectorAll("[data-probe]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    await ble.probeField(btn.dataset.probe);
+  });
+});
+
+$("penUp").onclick = async () => {
+  state.pen = false; $("penState").textContent = "Arriba"; await ble.pen(true);
+};
+$("penDown").onclick = async () => {
+  state.pen = true; $("penState").textContent = "Abajo"; await ble.pen(false);
+};
+
+function loadCalibration() {
+  const c = JSON.parse(localStorage.getItem("mk13181-calibration") || "null");
+  if (!c) return;
+  state.limits = c.limits || state.limits;
+  state.pos = c.pos || state.pos;
+  $("xmin").value = state.limits.x[0];
+  $("xmax").value = state.limits.x[1];
+  $("ymin").value = state.limits.y[0];
+  $("ymax").value = state.limits.y[1];
+  updatePosition("x", 0); updatePosition("y", 0);
+}
+function saveCalibration() {
+  state.limits.x = [Number($("xmin").value), Number($("xmax").value)];
+  state.limits.y = [Number($("ymin").value), Number($("ymax").value)];
+  localStorage.setItem("mk13181-calibration", JSON.stringify({
+    limits: state.limits, pos: state.pos
+  }));
+  log("Calibración guardada.");
+}
+$("saveCalibration").onclick = saveCalibration;
+$("resetCalibration").onclick = () => {
+  localStorage.removeItem("mk13181-calibration");
+  location.reload();
+};
+loadCalibration();
+
+const canvas = $("preview");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+$("imageInput").onchange = e => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const img = new Image();
+  img.onload = () => {
+    state.image = img;
+    drawPreview();
+    $("vectorizeBtn").disabled = false;
+    log(`Imagen cargada: ${img.width} × ${img.height}`);
+  };
+  img.src = URL.createObjectURL(file);
+};
+
+$("threshold").oninput = e => {
+  $("thresholdValue").textContent = e.target.value;
+  drawPreview();
+};
+$("scale").oninput = e => {
+  $("scaleValue").textContent = e.target.value + "%";
+  drawPreview();
+};
+
+function drawPreview() {
+  if (!state.image) return;
+  const img = state.image;
+  const maxW = 600, maxH = 400;
+  const s = Math.min(maxW / img.width, maxH / img.height, 1);
+  canvas.width = Math.max(1, Math.round(img.width * s));
+  canvas.height = Math.max(1, Math.round(img.height * s));
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+}
+
+function makeRasterPath() {
+  // Vectorizador simple: barre píxeles oscuros y agrupa corridas horizontales.
+  // Ahora emite coordenadas de MÁQUINA (campos a/b en 0..65535) mapeadas al
+  // rango calibrado de cada eje, así sendPath las manda directo.
+  const w = canvas.width, h = canvas.height;
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const threshold = Number($("threshold").value);
+  const scale = Number($("scale").value) / 100;
+  const path = [];
+
+  // Rango de máquina por eje, tomado de la calibración guardada. Si el
+  // usuario todavía no calibró en unidades de máquina, usamos el rango
+  // observado en la captura como valor por defecto conservador.
+  const ax0 = state.limits.x[0], ax1 = state.limits.x[1];
+  const ay0 = state.limits.y[0], ay1 = state.limits.y[1];
+  const toA = (px) => ax0 + (px / w) * (ax1 - ax0) * scale;
+  const toB = (py) => ay0 + (py / h) * (ay1 - ay0) * scale;
+
+  for (let y = 0; y < h; y += 2) {
+    let start = null;
+    for (let x = 0; x <= w; x++) {
+      let dark = false;
+      if (x < w) {
+        const i = (y * w + x) * 4;
+        const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        dark = lum < threshold;
+      }
+      if (dark && start === null) start = x;
+      if ((!dark || x === w) && start !== null) {
+        if (x - start >= 2) {
+          path.push({ type: "move", a: toA(start), b: toB(y) });
+          path.push({ type: "pen", down: true });
+          path.push({ type: "move", a: toA(x - 1), b: toB(y) });
+          path.push({ type: "pen", down: false });
+        }
+        start = null;
+      }
+    }
+  }
+  return path;
+}
+
+$("vectorizeBtn").onclick = () => {
+  state.path = makeRasterPath();
+  $("plotInfo").textContent = `${state.path.length} comandos preparados.`;
+  $("simulateBtn").disabled = !state.path.length;
+  $("sendBtn").disabled = !(ble.connected && state.path.length);
+  log(`Trazado preparado: ${state.path.length} comandos.`);
+};
+
+$("simulateBtn").onclick = async () => {
+  log("Simulación iniciada.");
+  for (const p of state.path.slice(0, 300)) {
+    if (p.type === "pen") state.pen = p.down;
+    else state.pos = { x: p.a, y: p.b };
+    await new Promise(r => setTimeout(r, 5));
+  }
+  log("Simulación terminada.");
+};
+
+$("sendBtn").onclick = async () => {
+  if (!ble.connected) return;
+  await ble.sendPath(state.path);
+  log("Fin del envío (actualmente modo placeholder).");
+};
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(console.error);
+}

@@ -1,0 +1,89 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #171717;
+  color: #eee;
+}
+header {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 18px;
+  background: #111;
+  border-bottom: 1px solid #333;
+}
+h1 { font-size: 1.1rem; margin: 0; }
+main { max-width: 900px; margin: auto; padding: 14px; }
+.card {
+  background: #222; border: 1px solid #383838; border-radius: 12px;
+  padding: 16px; margin-bottom: 14px;
+}
+h2 { font-size: 1rem; margin-top: 0; }
+h3 { margin: 8px 0; font-size: .95rem; }
+button, input { font: inherit; }
+button {
+  background: #eee; color: #111; border: 0; border-radius: 8px;
+  padding: 10px 14px; margin: 4px; cursor: pointer;
+}
+button:disabled { opacity: .4; cursor: default; }
+button.secondary { background: #444; color: #eee; }
+.status { padding: 5px 9px; border-radius: 20px; font-size: .8rem; }
+.offline { background: #432; }
+.online { background: #243; }
+.axis {
+  border-top: 1px solid #444; padding: 10px 0;
+}
+.jog { display: flex; gap: 8px; }
+.jog button { min-width: 70px; min-height: 48px; font-size: 1.4rem; }
+label { display: inline-flex; align-items: center; gap: 8px; margin: 6px 10px 6px 0; }
+input[type="number"] { width: 90px; padding: 7px; }
+input[type="range"] { vertical-align: middle; }
+output { margin-left: 8px; color: #bbb; }
+.preview-wrap {
+  width: 100%; overflow: auto; background: #fff; border-radius: 8px;
+  margin: 12px 0;
+}
+canvas { display: block; max-width: 100%; height: auto; }
+#log {
+  min-height: 90px; max-height: 260px; overflow: auto;
+  background: #111; padding: 10px; border-radius: 8px; font-size: .8rem;
+}
+p { color: #bbb; line-height: 1.45; }
+
+.console-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+#rawCmd {
+  flex: 1;
+  min-width: 180px;
+  background: #111;
+  color: #eee;
+  border: 1px solid #383838;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+}
+.console-label { color: #888; font-size: 0.85rem; }
+.chip {
+  background: #2b2b2b;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+.chip:hover { border-color: #666; }
+.hint { color: #888; font-size: 0.82rem; line-height: 1.5; margin-top: 8px; }
+code {
+  background: #111;
+  border: 1px solid #383838;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.92em;
+}
+
