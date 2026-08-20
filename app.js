@@ -74,14 +74,14 @@ const MK_HANDSHAKE = ["T041AABBW", "T00CW", "T006W", "T01F1W"];
 // Conjetura de mapeo campo->eje. VERIFICAR con los botones de la consola y
 // corregir acá. field: "A" | "B" | "C". invert: si el motor va al revés.
 const FIELD_MAP = {
-  x: { field: "B", invert: false },
-  y: { field: "A", invert: false },
+  x: { field: "A", invert: false },
+  y: { field: "B", invert: false },
   pen: { field: "C", invert: false },
 };
 // Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
 // el mapeo de arriba es correcto. Mientras sea false, moveAxis/pen/sendPath
 // solo loguean, no mueven nada.
-let FIELD_MAP_CONFIRMED = true;
+let FIELD_MAP_CONFIRMED = false;
 
 const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 // Valor del campo del lápiz en posición "abajo" (dibujando). Ajustable —
@@ -99,8 +99,13 @@ function buildMoveFrame(a, b, c) {
   return `T1440${h(a)}0${h(b)}0${h(c)}00000W`;
 }
 
-/** Posición absoluta actual de cada campo, como la manda el módulo. */
-const machinePos = { A: 0, B: 0, C: 0 };
+/** Posición absoluta actual de cada campo, como la manda el módulo.
+ * X e Y arrancan en el CENTRO del recorrido (no en 0), si no los botones
+ * de dirección negativa (izquierda / arriba / subir) no tienen para dónde
+ * ir: quedan chocando contra el piso 0 y no se mueven. El lápiz (C) sí
+ * arranca en 0 = arriba. */
+const HOME_CENTER = Math.round(MK_MAX / 2); // ~32767
+const machinePos = { A: HOME_CENTER, B: HOME_CENTER, C: 0 };
 
 function fieldFor(axis) {
   return FIELD_MAP[axis].field;
@@ -173,19 +178,41 @@ class MKBleAdapter {
     }
     log(`< ${text}`);
     // La app oficial confirma cada notificación con un byte 0x01 crudo.
+    // Se encola (no se escribe directo) para no chocar con otra escritura.
     this._writeRaw(new Uint8Array([0x01]));
   }
 
-  async _writeRaw(bytes) {
+  // Cola serializada: Web Bluetooth NO permite dos escrituras en simultáneo
+  // (da "GATT operation already in progress"). Encolamos todo y lo mandamos
+  // de a uno, con un respiro y un reintento si falla.
+  _enqueueWrite(bytes) {
+    this._writeChain = (this._writeChain || Promise.resolve()).then(() =>
+      this._doWrite(bytes)
+    );
+    return this._writeChain;
+  }
+
+  async _doWrite(bytes, attempt = 0) {
     if (!this.connected || !this.writeChar) {
       log("  (no enviado — sin conexión BLE activa)");
       return;
     }
     try {
       await this.writeChar.writeValueWithoutResponse(bytes);
+      // respiro corto entre escrituras: el módulo pierde comandos si van muy
+      // pegados (se ve en la captura ~80-100 ms entre frames).
+      await new Promise((r) => setTimeout(r, 40));
     } catch (err) {
-      log(`  error al escribir: ${err.message}`);
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 120));
+        return this._doWrite(bytes, attempt + 1);
+      }
+      log(`  error al escribir (tras reintentos): ${err.message}`);
     }
+  }
+
+  async _writeRaw(bytes) {
+    return this._enqueueWrite(bytes);
   }
 
   /** Manda un comando de texto crudo, ya envuelto (p.ej. "T006W") tal cual
