@@ -159,6 +159,17 @@ const machineVel = { A: VEL_REST, B: VEL_REST, C: VEL_REST };
 // nos movimos en cada pulso de jog. Sirve para calibrar extremos relativos.
 const estPos = { x: 0, y: 0 };
 
+// Lienzo virtual: origen (0,0) = centro. Los límites son en PULSOS a cada lado
+// del centro. El jog y el dibujo no pueden pasar estos bordes. Se calibran o
+// se guardan; por defecto amplios.
+const canvasLimits = {
+  x: Number(localStorage.getItem("mk13181-canvas-x") || 60),
+  y: Number(localStorage.getItem("mk13181-canvas-y") || 400),
+};
+function withinLimits(axis, nextPos) {
+  return nextPos >= -canvasLimits[axis] && nextPos <= canvasLimits[axis];
+}
+
 // Contador de pulsos por eje (para medir la proporción) y factor guardado.
 const pulseCount = { x: 0, y: 0 };
 // axisRatio: pulsos que tarda cada eje en cruzar el mismo tramo físico.
@@ -295,6 +306,7 @@ class MKBleAdapter {
    * los pulsos que todavía no se mandaron). */
   async stopAll() {
     this.aborting = true;              // corta sendPath en curso
+    if (this._contTimer) { clearInterval(this._contTimer); this._contTimer = null; this._contAxis = null; }
     this._writeChain = Promise.resolve(); // descartar cola pendiente
     machineVel.A = VEL_REST;
     machineVel.B = VEL_REST;
@@ -324,7 +336,8 @@ class MKBleAdapter {
   }
 
   /** Jog SEGURO: pulso de duración fija y frena solo (reposo = 0).
-   * El sentido se codifica con velToField (mitad baja / mitad alta). */
+   * El sentido se codifica con velToField (mitad baja / mitad alta).
+   * Respeta el lienzo: no avanza si el próximo pulso sale del borde. */
   async sendMove(axis, direction) {
     if (!FIELD_MAP_CONFIRMED) {
       log(`MOVE ${axis} dir=${direction} — confirmá FIELD_MAP primero. No se envía.`);
@@ -332,14 +345,55 @@ class MKBleAdapter {
     }
     const { field, invert } = FIELD_MAP[axis];
     const sign = direction * (invert ? -1 : 1);
+    if (!withinLimits(axis, estPos[axis] + direction)) {
+      log(`límite ${axis} alcanzado (${estPos[axis]}).`);
+      return;
+    }
     const speed = direction > 0 ? jogSpeed[axis].pos : jogSpeed[axis].neg;
     machineVel[field] = velToField(sign, speed);
     await this._emitFrame();
     await new Promise((r) => setTimeout(r, JOG_MS));
     machineVel[field] = VEL_REST; // frenar
     await this._emitFrame();
-    estPos[axis] += sign * 1;
+    estPos[axis] += direction * 1;
     pulseCount[axis] += 1; // para medir la proporción de ejes
+  }
+
+  /** Movimiento CONTINUO: arranca y mantiene la velocidad mientras el botón
+   * esté apretado. Cuenta pulsos por tiempo y frena solo si llega al borde
+   * del lienzo. stopContinuous() lo detiene al soltar. */
+  async startContinuous(axis, direction) {
+    if (!FIELD_MAP_CONFIRMED || this._contTimer) return;
+    const { field, invert } = FIELD_MAP[axis];
+    const sign = direction * (invert ? -1 : 1);
+    if (!withinLimits(axis, estPos[axis] + direction)) {
+      log(`ya estás en el borde ${axis}.`);
+      return;
+    }
+    const speed = direction > 0 ? jogSpeed[axis].pos : jogSpeed[axis].neg;
+    machineVel[field] = velToField(sign, speed);
+    await this._emitFrame();
+    // ir contando avance estimado y cortar en el borde
+    this._contAxis = axis;
+    this._contTimer = setInterval(async () => {
+      estPos[axis] += direction * 1;
+      pulseCount[axis] += 1;
+      refreshPosLabels();
+      if (!withinLimits(axis, estPos[axis] + direction)) {
+        log(`borde ${axis} alcanzado — freno.`);
+        await this.stopContinuous();
+      }
+    }, JOG_MS);
+  }
+
+  async stopContinuous() {
+    if (this._contTimer) { clearInterval(this._contTimer); this._contTimer = null; }
+    if (this._contAxis) {
+      const { field } = FIELD_MAP[this._contAxis];
+      machineVel[field] = VEL_REST;
+      await this._emitFrame();
+      this._contAxis = null;
+    }
   }
 
   /** Fija velocidad continua en un eje (para dibujo). No frena solo. */
@@ -424,13 +478,23 @@ function refreshPosLabels() {
   if ($("pulseCountY")) $("pulseCountY").textContent = pulseCount.y;
 }
 
+// Botones de jog: MANTENER APRETADO = movimiento continuo, SOLTAR = frena.
+// Un toque corto igual mueve un poco (arranca y frena enseguida).
 document.querySelectorAll("[data-jog]").forEach(btn => {
-  btn.addEventListener("click", async () => {
-    const axis = btn.dataset.jog;
-    const dir = Number(btn.dataset.dir);
-    await ble.sendMove(axis, dir); // pulso de velocidad y frena
-    refreshPosLabels();            // la UI refleja la posición real
-  });
+  const axis = btn.dataset.jog;
+  const dir = Number(btn.dataset.dir);
+  const start = async (e) => {
+    e.preventDefault();
+    await ble.startContinuous(axis, dir);
+  };
+  const stop = async () => {
+    await ble.stopContinuous();
+    refreshPosLabels();
+  };
+  btn.addEventListener("pointerdown", start);
+  btn.addEventListener("pointerup", stop);
+  btn.addEventListener("pointerleave", stop);
+  btn.addEventListener("pointercancel", stop);
 });
 
 $("stopBtn").onclick = async () => {
@@ -453,6 +517,38 @@ $("saveRatio").onclick = () => {
   log(`Proporción guardada — X:${axisRatio.x} Y:${axisRatio.y}`);
   if (currentShape) buildAndPreview();
 };
+
+$("markCenter").onclick = () => {
+  estPos.x = 0; estPos.y = 0;
+  pulseCount.x = 0; pulseCount.y = 0;
+  refreshPosLabels();
+  $("centerOut").textContent = "✓ centro marcado";
+  log("Origen (0,0) marcado en la posición actual.");
+};
+
+document.querySelectorAll("[data-fixcanvas]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const axis = btn.dataset.fixcanvas;
+    const val = Math.abs(estPos[axis]);
+    $(`canvas${axis.toUpperCase()}`).value = val;
+    log(`lienzo ${axis} = ±${val} (desde posición actual)`);
+  });
+});
+
+$("saveCanvas").onclick = () => {
+  canvasLimits.x = Math.max(1, Number($("canvasX").value));
+  canvasLimits.y = Math.max(1, Number($("canvasY").value));
+  localStorage.setItem("mk13181-canvas-x", canvasLimits.x);
+  localStorage.setItem("mk13181-canvas-y", canvasLimits.y);
+  $("canvasOut").textContent = `✓ lienzo ±X:${canvasLimits.x} ±Y:${canvasLimits.y}`;
+  log(`Lienzo guardado — ±X:${canvasLimits.x} ±Y:${canvasLimits.y}`);
+};
+
+// reflejar valores guardados en los inputs al cargar
+$("ratioX").value = axisRatio.x;
+$("ratioY").value = axisRatio.y;
+$("canvasX").value = canvasLimits.x;
+$("canvasY").value = canvasLimits.y;
 
 $("connectBtn").onclick = async () => {
   try { await ble.connect(); }

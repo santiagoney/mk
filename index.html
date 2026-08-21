@@ -29,7 +29,13 @@
     <div class="step-head"><span class="step-num">2</span><h2>Calibrar</h2></div>
     <p class="lock-msg">Conectá primero para desbloquear este paso.</p>
     <div class="step-body">
-      <p>Movés cada eje hasta su extremo real y tocás <b>Fijar</b> para guardar ese límite. El cabezal arranca en el centro, así vas para los dos lados.</p>
+      <div class="origin-box">
+        <p><b>Origen del lienzo.</b> Poné el cabezal donde querés el CENTRO del dibujo y marcá el origen. Todo se mide desde ahí. Mantené apretadas las flechas para moverte rápido.</p>
+        <button id="markCenter" class="primary">Marcar centro (0,0)</button>
+        <span class="ok-msg" id="centerOut"></span>
+      </div>
+
+      <p>Movés cada eje con las flechas (mantené apretado = continuo). El lienzo es un rectángulo de ± pulsos desde el centro; fuera de eso no se mueve.</p>
 
       <div class="axis">
         <h3>Eje X</h3>
@@ -81,6 +87,21 @@
         </div>
         <button class="mini" id="saveRatio">Guardar proporción</button>
         <span class="ok-msg" id="ratioOut"></span>
+      </div>
+
+      <div class="measure-box">
+        <h3>Tamaño del lienzo</h3>
+        <p class="hint">Cuántos pulsos a cada lado del centro. Fuera de este rectángulo el cabezal no se mueve. Usá "Fijar aquí" en un borde para tomarlo de la posición actual.</p>
+        <div class="measure-row">
+          <label>± X <input id="canvasX" type="number" value="60" style="width:70px"></label>
+          <button class="mini" data-fixcanvas="x">Fijar X aquí</button>
+        </div>
+        <div class="measure-row">
+          <label>± Y <input id="canvasY" type="number" value="400" style="width:70px"></label>
+          <button class="mini" data-fixcanvas="y">Fijar Y aquí</button>
+        </div>
+        <button class="mini" id="saveCanvas">Guardar lienzo</button>
+        <span class="ok-msg" id="canvasOut"></span>
       </div>
 
       <div class="axis">

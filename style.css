@@ -151,3 +151,9 @@ button.stop:active { background: #a11; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0;
   font-size: 0.9rem; color: #ccc;
 }
+
+.origin-box {
+  border: 1px solid #2d6cdf; border-radius: 10px; padding: 12px;
+  margin-bottom: 14px; background: #12203a;
+}
+.origin-box p { margin: 0 0 10px; }
