@@ -179,6 +179,7 @@ class MKBleAdapter {
     this.writeChar = null;
     this.notifyChar = null;
     this.connected = false;
+    this.aborting = false;
   }
 
   async connect() {
@@ -289,12 +290,25 @@ class MKBleAdapter {
     await this.sendRawCommand(frame);
   }
 
-  /** Frena todos los motores: los tres campos a reposo (0). */
+  /** Frena YA: corta cualquier dibujo en curso, descarta la cola de frames
+   * pendientes, y escribe el frame de parada directo (sin encolar detrás de
+   * los pulsos que todavía no se mandaron). */
   async stopAll() {
+    this.aborting = true;              // corta sendPath en curso
+    this._writeChain = Promise.resolve(); // descartar cola pendiente
     machineVel.A = VEL_REST;
     machineVel.B = VEL_REST;
     machineVel.C = VEL_REST;
-    await this._emitFrame();
+    const frame = buildMoveFrame(VEL_REST, VEL_REST, VEL_REST);
+    // escritura directa, salteando la cola, para que el freno sea inmediato
+    if (this.connected && this.writeChar) {
+      try {
+        await this.writeChar.writeValueWithoutResponse(new TextEncoder().encode(frame));
+        log(`> ${frame} (freno directo)`);
+      } catch (err) {
+        log(`  error al frenar: ${err.message}`);
+      }
+    }
   }
 
   /** Prueba de identificación: da un pulso a UN campo (sentido +) y frena. */
@@ -356,15 +370,18 @@ class MKBleAdapter {
       log("Confirmá FIELD_MAP antes de dibujar.");
       return;
     }
+    this.aborting = false; // arrancar un dibujo nuevo limpia el flag
     log(`dibujando: ${path.length} pasos…`);
     for (const step of path) {
+      if (this.aborting) { log("dibujo cancelado (FRENAR)."); return; }
       if (step.pen) {
         await this.pen(step.pen === "up");
         await new Promise((r) => setTimeout(r, 150));
       } else if (step.move) {
         const { axis, dir, pulses } = step.move;
         for (let i = 0; i < pulses; i++) {
-          await this.sendMove(axis, dir); // mismo pulso que el jog (mueve + frena)
+          if (this.aborting) { log("dibujo cancelado (FRENAR)."); return; }
+          await this.sendMove(axis, dir);
           await new Promise((r) => setTimeout(r, 60));
         }
       }
