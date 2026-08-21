@@ -1,5 +1,5 @@
 // Subí este número en cada cambio para invalidar el caché viejo.
-const CACHE = "mk13181-v15";
+const CACHE = "mk13181-v16";
 const ASSETS = ["./", "./index.html", "./style.css", "./app.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

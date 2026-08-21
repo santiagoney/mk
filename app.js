@@ -342,11 +342,25 @@ class MKBleAdapter {
   }
 
   async sendPath(path) {
-    // El control es por VELOCIDAD+TIEMPO a lazo abierto, así que un trazado
-    // fiel todavía necesita calibrar cuántos ms = cuánta distancia. Por ahora
-    // este envío queda deshabilitado para no dibujar cualquier cosa: primero
-    // hay que resolver la conversión distancia->tiempo (ver nota en el chat).
-    log("Envío de dibujo pausado: el control es por velocidad, falta calibrar tiempo↔distancia. El jog y el lápiz ya funcionan.");
+    if (!FIELD_MAP_CONFIRMED) {
+      log("Confirmá FIELD_MAP antes de dibujar.");
+      return;
+    }
+    log(`dibujando: ${path.length} pasos…`);
+    for (const step of path) {
+      if (step.pen) {
+        await this.pen(step.pen === "up");
+        await new Promise((r) => setTimeout(r, 150));
+      } else if (step.move) {
+        const { axis, dir, pulses } = step.move;
+        for (let i = 0; i < pulses; i++) {
+          await this.sendMove(axis, dir); // mismo pulso que el jog (mueve + frena)
+          await new Promise((r) => setTimeout(r, 60));
+        }
+      }
+    }
+    await this.stopAll();
+    log("dibujo terminado.");
   }
 }
 
@@ -511,108 +525,115 @@ loadCalibration();
 const canvas = $("preview");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-$("imageInput").onchange = e => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  const img = new Image();
-  img.onload = () => {
-    state.image = img;
-    drawPreview();
+// ---- Generador de FIGURAS SIMPLES basado en pulsos ----
+// Un "path" es una lista de pasos:
+//   { pen: "up" | "down" }
+//   { move: { axis: "x"|"y", dir: +1|-1, pulses: N } }
+// Cada pulso equivale a un toque de jog (misma distancia que en calibración).
+
+let currentShape = null;
+let shapeSizePulses = 8;
+
+$("shapeSize").oninput = (e) => {
+  shapeSizePulses = Number(e.target.value);
+  $("shapeSizeOut").textContent = shapeSizePulses;
+  if (currentShape) buildAndPreview();
+};
+
+document.querySelectorAll(".shape-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    currentShape = btn.dataset.shape;
+    document.querySelectorAll(".shape-btn").forEach((b) => b.classList.remove("sel"));
+    btn.classList.add("sel");
     $("vectorizeBtn").disabled = false;
-    log(`Imagen cargada: ${img.width} × ${img.height}`);
-  };
-  img.src = URL.createObjectURL(file);
-};
+    buildAndPreview();
+  });
+});
 
-$("threshold").oninput = e => {
-  $("thresholdValue").textContent = e.target.value;
-  drawPreview();
-};
-$("scale").oninput = e => {
-  $("scaleValue").textContent = e.target.value + "%";
-  drawPreview();
-};
-
-function drawPreview() {
-  if (!state.image) return;
-  const img = state.image;
-  const maxW = 600, maxH = 400;
-  const s = Math.min(maxW / img.width, maxH / img.height, 1);
-  canvas.width = Math.max(1, Math.round(img.width * s));
-  canvas.height = Math.max(1, Math.round(img.height * s));
-  ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-}
-
-function makeRasterPath() {
-  // Vectorizador simple: barre píxeles oscuros y agrupa corridas horizontales.
-  // Ahora emite coordenadas de MÁQUINA (campos a/b en 0..65535) mapeadas al
-  // rango calibrado de cada eje, así sendPath las manda directo.
-  const w = canvas.width, h = canvas.height;
-  const data = ctx.getImageData(0, 0, w, h).data;
-  const threshold = Number($("threshold").value);
-  const scale = Number($("scale").value) / 100;
-  const path = [];
-
-  // Rango de máquina por eje, tomado de la calibración guardada. Si el
-  // usuario todavía no calibró en unidades de máquina, usamos el rango
-  // observado en la captura como valor por defecto conservador.
-  const ax0 = state.limits.x[0], ax1 = state.limits.x[1];
-  const ay0 = state.limits.y[0], ay1 = state.limits.y[1];
-  const toA = (px) => ax0 + (px / w) * (ax1 - ax0) * scale;
-  const toB = (py) => ay0 + (py / h) * (ay1 - ay0) * scale;
-
-  for (let y = 0; y < h; y += 2) {
-    let start = null;
-    for (let x = 0; x <= w; x++) {
-      let dark = false;
-      if (x < w) {
-        const i = (y * w + x) * 4;
-        const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
-        dark = lum < threshold;
-      }
-      if (dark && start === null) start = x;
-      if ((!dark || x === w) && start !== null) {
-        if (x - start >= 2) {
-          path.push({ type: "move", a: toA(start), b: toB(y) });
-          path.push({ type: "pen", down: true });
-          path.push({ type: "move", a: toA(x - 1), b: toB(y) });
-          path.push({ type: "pen", down: false });
-        }
-        start = null;
-      }
-    }
+function makeShapePath(shape, n) {
+  const path = [{ pen: "up" }];
+  const seg = (axis, dir, pulses) => path.push({ move: { axis, dir, pulses } });
+  switch (shape) {
+    case "square":
+      path.push({ pen: "down" });
+      seg("x", +1, n); seg("y", +1, n); seg("x", -1, n); seg("y", -1, n);
+      path.push({ pen: "up" });
+      break;
+    case "hline":
+      path.push({ pen: "down" }); seg("x", +1, n); path.push({ pen: "up" });
+      break;
+    case "vline":
+      path.push({ pen: "down" }); seg("y", +1, n); path.push({ pen: "up" });
+      break;
+    case "lshape":
+      path.push({ pen: "down" }); seg("x", +1, n); seg("y", +1, n); path.push({ pen: "up" });
+      break;
   }
   return path;
 }
 
-$("vectorizeBtn").onclick = () => {
-  state.path = makeRasterPath();
-  $("plotInfo").textContent = `${state.path.length} comandos preparados.`;
-  $("simulateBtn").disabled = !state.path.length;
-  $("sendBtn").disabled = !(ble.connected && state.path.length);
-  log(`Trazado preparado: ${state.path.length} comandos.`);
-  if (state.path.length) {
-    unlockStep("stepSend");
-    scrollToStep("stepSend");
+function buildAndPreview() {
+  state.path = makeShapePath(currentShape, shapeSizePulses);
+  drawSimulation(state.path);
+  const moves = state.path.filter((p) => p.move).reduce((s, p) => s + p.move.pulses, 0);
+  $("plotInfo") && ($("plotInfo").textContent = `${moves} pulsos de movimiento.`);
+  $("simulateBtn").disabled = false;
+  $("sendBtn").disabled = !ble.connected;
+  unlockStep("stepSend");
+}
+
+// Dibuja la figura en el canvas recorriendo los pulsos (1 pulso = 1 unidad).
+function drawSimulation(path, animatePenPos = null) {
+  const cw = canvas.width, ch = canvas.height;
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cw, ch);
+  // recorrer para hallar límites
+  let x = 0, y = 0, minX = 0, maxX = 0, minY = 0, maxY = 0;
+  for (const p of path) if (p.move) {
+    if (p.move.axis === "x") x += p.move.dir * p.move.pulses;
+    else y += p.move.dir * p.move.pulses;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
   }
+  const spanX = Math.max(1, maxX - minX), spanY = Math.max(1, maxY - minY);
+  const pad = 30;
+  const s = Math.min((cw - 2 * pad) / spanX, (ch - 2 * pad) / spanY);
+  const tx = (vx) => pad + (vx - minX) * s;
+  const ty = (vy) => pad + (vy - minY) * s;
+
+  x = 0; y = 0;
+  let pen = false;
+  ctx.strokeStyle = "#111"; ctx.lineWidth = 2; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(tx(0), ty(0));
+  for (const p of path) {
+    if (p.pen) { pen = p.pen === "down"; continue; }
+    if (p.move) {
+      const steps = p.move.pulses;
+      for (let i = 0; i < steps; i++) {
+        if (p.move.axis === "x") x += p.move.dir; else y += p.move.dir;
+        if (pen) ctx.lineTo(tx(x), ty(y)); else ctx.moveTo(tx(x), ty(y));
+      }
+    }
+  }
+  ctx.stroke();
+}
+
+$("vectorizeBtn").onclick = () => {
+  if (!currentShape) return;
+  buildAndPreview();
+  log(`Figura preparada: ${currentShape}, ${shapeSizePulses} pulsos/lado.`);
+  scrollToStep("stepSend");
 };
 
 $("simulateBtn").onclick = async () => {
-  log("Simulación iniciada.");
-  for (const p of state.path.slice(0, 300)) {
-    if (p.type === "pen") state.pen = p.down;
-    else state.pos = { x: p.a, y: p.b };
-    await new Promise(r => setTimeout(r, 5));
-  }
-  log("Simulación terminada.");
+  if (!state.path.length) return;
+  log("Simulación en pantalla (no mueve el plotter).");
+  drawSimulation(state.path);
 };
 
 $("sendBtn").onclick = async () => {
-  if (!ble.connected) return;
+  if (!ble.connected) return log("conectá primero.");
+  if (!state.path.length) return log("preparé una figura primero.");
   await ble.sendPath(state.path);
-  log("Fin del envío (actualmente modo placeholder).");
 };
 
 if ("serviceWorker" in navigator) {

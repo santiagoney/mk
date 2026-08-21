@@ -134,3 +134,10 @@ button.stop:active { background: #a11; }
 }
 .speed-slider input[type="range"] { flex: 1; accent-color: #2d6cdf; }
 .speed-slider output { width: 42px; text-align: right; color: #ddd; }
+
+.shape-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.shape-btn {
+  background: #2b2b2b; color: #ddd; border: 1px solid #444;
+  border-radius: 10px; padding: 12px 14px; font-size: 0.95rem;
+}
+.shape-btn.sel { border-color: #2d6cdf; background: #1a2740; color: #fff; }

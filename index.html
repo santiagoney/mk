@@ -91,21 +91,27 @@
 
   <!-- PASO 3 -->
   <section class="card step is-locked" id="stepImage" data-step="3">
-    <div class="step-head"><span class="step-num">3</span><h2>Cargar dibujo</h2></div>
+    <div class="step-head"><span class="step-num">3</span><h2>Figura</h2></div>
     <p class="lock-msg">Guardá la calibración para desbloquear este paso.</p>
     <div class="step-body">
-      <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp">
+      <p>Elegí una figura simple. El tamaño se mide en "pulsos" (cada pulso es un toque de jog). Empezá chico y ajustá mirando cómo sale.</p>
+
+      <div class="shape-row">
+        <button class="shape-btn" data-shape="square">◻ Cuadrado</button>
+        <button class="shape-btn" data-shape="hline">— Línea horizontal</button>
+        <button class="shape-btn" data-shape="vline">| Línea vertical</button>
+        <button class="shape-btn" data-shape="lshape">∟ Ele (prueba)</button>
+      </div>
+
+      <label>Tamaño (pulsos por lado)
+        <input id="shapeSize" type="range" min="2" max="30" value="8">
+        <output id="shapeSizeOut">8</output>
+      </label>
+
       <div class="preview-wrap">
         <canvas id="preview" width="600" height="400"></canvas>
       </div>
-      <label>Umbral
-        <input id="threshold" type="range" min="0" max="255" value="180">
-        <output id="thresholdValue">180</output>
-      </label>
-      <label>Escala (%)
-        <input id="scale" type="range" min="10" max="100" value="80">
-        <output id="scaleValue">80%</output>
-      </label>
+
       <button id="vectorizeBtn" class="primary" disabled>Preparar trazado</button>
     </div>
   </section>
