@@ -75,7 +75,7 @@ const MK_HANDSHAKE = ["T041AABBW", "T00CW", "T006W", "T01F1W"];
 // corregir acá. field: "A" | "B" | "C". invert: si el motor va al revés.
 const FIELD_MAP = {
   x: { field: "B", invert: false },
-  y: { field: "A", invert: false },
+  y: { field: "A", invert: true },
   pen: { field: "C", invert: false },
 };
 // Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
@@ -95,10 +95,10 @@ const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 // El lápiz (campo C) tiene su reposo en 0 y se maneja aparte (leva rotativa).
 // ============================================================
 const VEL_STOP = 0x8000;        // 32768 — velocidad cero (quieto)
-const JOG_STEP = 2000;          // cuánto cambia la velocidad por cada toque
-const VEL_MIN = 0x2000;         // 8192  — tope de velocidad hacia un lado
-const VEL_MAX = 0xE000;         // 57344 — tope de velocidad hacia el otro
-// (los topes evitan saltar al extremo del rango de golpe; ajustables)
+const JOG_SPEED = 3000;         // qué tan lejos del centro (velocidad del pulso)
+const JOG_MS = 400;             // duración del pulso; a velocidad baja mueve poco
+// Nota: el módulo mantiene la última velocidad hasta el próximo frame, por eso
+// cada jog frena solo al final mandando VEL_STOP.
 
 const penState = {
   up: Number(localStorage.getItem("mk13181-pen-up") || 1500),
@@ -270,10 +270,10 @@ class MKBleAdapter {
     await this._emitFrame();
   }
 
-  /** Jog por ACUMULADOR DE VELOCIDAD. El módulo mantiene la última velocidad
-   * recibida hasta el próximo frame (no son pulsos de tiempo). Cada toque
-   * suma o resta un escalón desde el centro. Para frenar, se vuelve al centro
-   * escalón por escalón (o con el botón Frenar). */
+  /** Jog SEGURO por pulso de duración fija a velocidad baja constante.
+   * Cada toque: arranca desde quieto, mueve a velocidad baja durante JOG_MS,
+   * y frena SOLO. Nunca se escapa (a diferencia del acumulador). El sentido
+   * lo da la distancia al centro (por debajo/por encima de VEL_STOP). */
   async sendMove(axis, direction) {
     if (!FIELD_MAP_CONFIRMED) {
       log(`MOVE ${axis} dir=${direction} — confirmá FIELD_MAP primero. No se envía.`);
@@ -281,9 +281,11 @@ class MKBleAdapter {
     }
     const { field, invert } = FIELD_MAP[axis];
     const sign = direction * (invert ? -1 : 1);
-    const next = machineVel[field] + sign * JOG_STEP;
-    // límites del campo, sin cruzar de un extremo al otro de golpe
-    machineVel[field] = Math.max(VEL_MIN, Math.min(VEL_MAX, next));
+    // arrancar garantizado desde reposo, mover a velocidad baja fija, frenar
+    machineVel[field] = VEL_STOP + sign * JOG_SPEED;
+    await this._emitFrame();
+    await new Promise((r) => setTimeout(r, JOG_MS));
+    machineVel[field] = VEL_STOP;
     await this._emitFrame();
     estPos[axis] += sign * 1;
   }
