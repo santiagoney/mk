@@ -141,3 +141,13 @@ button.stop:active { background: #a11; }
   border-radius: 10px; padding: 12px 14px; font-size: 0.95rem;
 }
 .shape-btn.sel { border-color: #2d6cdf; background: #1a2740; color: #fff; }
+
+.measure-box {
+  border: 1px solid #333; border-radius: 10px; padding: 12px;
+  margin: 12px 0; background: #161616;
+}
+.measure-box h3 { margin: 0 0 6px; font-size: 0.95rem; }
+.measure-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0;
+  font-size: 0.9rem; color: #ccc;
+}

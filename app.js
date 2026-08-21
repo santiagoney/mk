@@ -159,6 +159,15 @@ const machineVel = { A: VEL_REST, B: VEL_REST, C: VEL_REST };
 // nos movimos en cada pulso de jog. Sirve para calibrar extremos relativos.
 const estPos = { x: 0, y: 0 };
 
+// Contador de pulsos por eje (para medir la proporción) y factor guardado.
+const pulseCount = { x: 0, y: 0 };
+// axisRatio: pulsos que tarda cada eje en cruzar el mismo tramo físico.
+// Se usa para compensar: el eje más "corto" por pulso recibe más pulsos.
+const axisRatio = {
+  x: Number(localStorage.getItem("mk13181-ratio-x") || 10),
+  y: Number(localStorage.getItem("mk13181-ratio-y") || 10),
+};
+
 function fieldFor(axis) {
   return FIELD_MAP[axis].field;
 }
@@ -316,6 +325,7 @@ class MKBleAdapter {
     machineVel[field] = VEL_REST; // frenar
     await this._emitFrame();
     estPos[axis] += sign * 1;
+    pulseCount[axis] += 1; // para medir la proporción de ejes
   }
 
   /** Fija velocidad continua en un eje (para dibujo). No frena solo. */
@@ -393,6 +403,8 @@ function machineAxisValue(axis) {
 function refreshPosLabels() {
   $("xpos").textContent = `X = ${machineAxisValue("x")}`;
   $("ypos").textContent = `Y = ${machineAxisValue("y")}`;
+  if ($("pulseCountX")) $("pulseCountX").textContent = pulseCount.x;
+  if ($("pulseCountY")) $("pulseCountY").textContent = pulseCount.y;
 }
 
 document.querySelectorAll("[data-jog]").forEach(btn => {
@@ -407,6 +419,22 @@ document.querySelectorAll("[data-jog]").forEach(btn => {
 $("stopBtn").onclick = async () => {
   await ble.stopAll();
   log("FRENADO: ejes al centro.");
+};
+
+$("resetPulseCount").onclick = () => {
+  pulseCount.x = 0; pulseCount.y = 0;
+  refreshPosLabels();
+  log("Contador de pulsos reseteado.");
+};
+
+$("saveRatio").onclick = () => {
+  axisRatio.x = Math.max(1, Number($("ratioX").value));
+  axisRatio.y = Math.max(1, Number($("ratioY").value));
+  localStorage.setItem("mk13181-ratio-x", axisRatio.x);
+  localStorage.setItem("mk13181-ratio-y", axisRatio.y);
+  $("ratioOut").textContent = `✓ X:${axisRatio.x} / Y:${axisRatio.y}`;
+  log(`Proporción guardada — X:${axisRatio.x} Y:${axisRatio.y}`);
+  if (currentShape) buildAndPreview();
 };
 
 $("connectBtn").onclick = async () => {
@@ -552,21 +580,26 @@ document.querySelectorAll(".shape-btn").forEach((btn) => {
 
 function makeShapePath(shape, n) {
   const path = [{ pen: "up" }];
+  // Compensación: cada eje tarda distinto por pulso. axisRatio dice cuántos
+  // pulsos cruza cada eje el mismo tramo. Para que N sea la misma distancia
+  // física en ambos ejes, escalo los pulsos de cada eje por su ratio.
+  const nx = Math.max(1, Math.round(n * (axisRatio.x / 10)));
+  const ny = Math.max(1, Math.round(n * (axisRatio.y / 10)));
   const seg = (axis, dir, pulses) => path.push({ move: { axis, dir, pulses } });
   switch (shape) {
     case "square":
       path.push({ pen: "down" });
-      seg("x", +1, n); seg("y", +1, n); seg("x", -1, n); seg("y", -1, n);
+      seg("x", +1, nx); seg("y", +1, ny); seg("x", -1, nx); seg("y", -1, ny);
       path.push({ pen: "up" });
       break;
     case "hline":
-      path.push({ pen: "down" }); seg("x", +1, n); path.push({ pen: "up" });
+      path.push({ pen: "down" }); seg("x", +1, nx); path.push({ pen: "up" });
       break;
     case "vline":
-      path.push({ pen: "down" }); seg("y", +1, n); path.push({ pen: "up" });
+      path.push({ pen: "down" }); seg("y", +1, ny); path.push({ pen: "up" });
       break;
     case "lshape":
-      path.push({ pen: "down" }); seg("x", +1, n); seg("y", +1, n); path.push({ pen: "up" });
+      path.push({ pen: "down" }); seg("x", +1, nx); seg("y", +1, ny); path.push({ pen: "up" });
       break;
   }
   return path;

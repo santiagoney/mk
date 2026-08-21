@@ -67,6 +67,22 @@
 
       <button id="stopBtn" class="stop">■ FRENAR TODO</button>
 
+      <div class="measure-box">
+        <h3>Proporción de ejes</h3>
+        <p class="hint">Los ejes avanzan distinto por pulso. Medí cuántos pulsos tarda cada eje en cruzar el MISMO tramo del papel, y guardá. Sirve para que el cuadrado salga cuadrado.</p>
+        <div class="measure-row">
+          <span>Pulsos contados — X: <b id="pulseCountX">0</b></span>
+          <span>Y: <b id="pulseCountY">0</b></span>
+          <button class="mini" id="resetPulseCount">Reset contador</button>
+        </div>
+        <div class="measure-row">
+          <label>Pulsos X por tramo <input id="ratioX" type="number" value="10" style="width:70px"></label>
+          <label>Pulsos Y por tramo <input id="ratioY" type="number" value="10" style="width:70px"></label>
+        </div>
+        <button class="mini" id="saveRatio">Guardar proporción</button>
+        <span class="ok-msg" id="ratioOut"></span>
+      </div>
+
       <div class="axis">
         <h3>Lápiz</h3>
         <button id="penUp">Subir</button>
