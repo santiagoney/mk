@@ -714,6 +714,33 @@ function makeShapePath(shape, n) {
     case "lshape":
       path.push({ pen: "down" }); seg("x", +1, nx); seg("y", +1, ny); path.push({ pen: "up" });
       break;
+    case "circle": {
+      // El motor solo hace pulsos por eje, así que el círculo se aproxima
+      // recorriendo su borde en muchos pasos: en cada paso muevo los pulsos
+      // X e Y necesarios para llegar al siguiente punto de la circunferencia.
+      // Radio n (en "unidades de figura"); se compensa por eje con axisRatio.
+      const rx = nx, ry = ny;              // radios en pulsos por eje
+      const steps = Math.max(24, Math.round(n * 3)); // suavidad del círculo
+      // posición actual en pulsos, relativa al centro del círculo
+      let curX = 0, curY = 0;
+      // arrancar en el punto (rx, 0) — mover hasta ahí con lápiz arriba
+      const start = { x: rx, y: 0 };
+      // ir al inicio
+      if (start.x !== 0) seg("x", start.x > 0 ? +1 : -1, Math.abs(start.x));
+      curX = start.x; curY = start.y;
+      path.push({ pen: "down" });
+      for (let i = 1; i <= steps; i++) {
+        const ang = (i / steps) * 2 * Math.PI;
+        const tx = Math.round(rx * Math.cos(ang));
+        const ty = Math.round(ry * Math.sin(ang));
+        const dx = tx - curX, dy = ty - curY;
+        if (dx !== 0) seg("x", dx > 0 ? +1 : -1, Math.abs(dx));
+        if (dy !== 0) seg("y", dy > 0 ? +1 : -1, Math.abs(dy));
+        curX = tx; curY = ty;
+      }
+      path.push({ pen: "up" });
+      break;
+    }
   }
   return path;
 }
