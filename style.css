@@ -87,3 +87,35 @@ code {
   font-size: 0.92em;
 }
 
+
+/* ---- Flujo por pasos ---- */
+.step-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: #2d6cdf; color: #fff; font-weight: 700; font-size: 0.95rem;
+  flex: 0 0 auto;
+}
+.step-head h2 { margin: 0; }
+
+.step.is-locked .step-body { display: none; }
+.step.is-locked { opacity: 0.55; }
+.step .lock-msg { display: none; color: #d98c3a; font-size: 0.9rem; margin: 4px 0 0; }
+.step.is-locked .lock-msg { display: block; }
+.step.is-locked .step-num { background: #555; }
+
+.limit-set {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px;
+}
+.limit-set input[type="number"] { width: 90px; }
+button.mini {
+  padding: 6px 10px; font-size: 0.82rem; background: #2b2b2b;
+  border: 1px solid #444; border-radius: 8px; color: #ddd;
+}
+button.mini:active { border-color: #2d6cdf; }
+button.primary { background: #2d6cdf; color: #fff; border: none; }
+button.primary:disabled { background: #444; color: #999; }
+.ok-msg { color: #4caf7d; font-size: 0.9rem; margin-top: 8px; }
+
+details.advanced { margin-top: 6px; }
+details.advanced summary { cursor: pointer; color: #aaa; font-size: 0.95rem; padding: 4px 0; }

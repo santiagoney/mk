@@ -74,8 +74,8 @@ const MK_HANDSHAKE = ["T041AABBW", "T00CW", "T006W", "T01F1W"];
 // Conjetura de mapeo campo->eje. VERIFICAR con los botones de la consola y
 // corregir acá. field: "A" | "B" | "C". invert: si el motor va al revés.
 const FIELD_MAP = {
-  x: { field: "B", invert: false },
-  y: { field: "A", invert: false },
+  x: { field: "A", invert: false },
+  y: { field: "B", invert: false },
   pen: { field: "C", invert: false },
 };
 // Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
@@ -84,9 +84,15 @@ const FIELD_MAP = {
 let FIELD_MAP_CONFIRMED = true;
 
 const MK_MAX = 0xffff; // techo del campo hex de 16 bits
-// Valor del campo del lápiz en posición "abajo" (dibujando). Ajustable —
-// arrancá conservador y subilo hasta que apoye sin forzar.
-const PEN_DOWN_VALUE = 20000;
+
+// El lápiz lo mueve una LEVA ROTATIVA, no un actuador lineal: dos posiciones
+// muy cercanas entre sí (si te pasás, la leva sigue girando y vuelve). Por eso
+// arriba/abajo son valores CHICOS y próximos, ajustables en vivo desde la app
+// con los deslizadores. Se guardan en localStorage.
+const penState = {
+  up: Number(localStorage.getItem("mk13181-pen-up") || 1500),
+  down: Number(localStorage.getItem("mk13181-pen-down") || 3000),
+};
 
 /** Construye un frame de movimiento absoluto a partir de 3 posiciones
  * (0..65535). Estructura confirmada por la captura. */
@@ -269,11 +275,9 @@ class MKBleAdapter {
       log(`PEN ${up ? "UP" : "DOWN"} — confirmá FIELD_MAP primero. No se envía.`);
       return;
     }
-    const { field, invert } = FIELD_MAP.pen;
-    // up = campo en 0, down = campo en su valor de trabajo (ajustable).
-    const down = invert ? 0 : PEN_DOWN_VALUE;
-    const upv = invert ? PEN_DOWN_VALUE : 0;
-    machinePos[field] = up ? upv : down;
+    const { field } = FIELD_MAP.pen;
+    // Dos posiciones cercanas de la leva rotativa, ajustables desde la app.
+    machinePos[field] = up ? penState.up : penState.down;
     await this._emitFrame();
   }
 
@@ -305,20 +309,36 @@ function setBleUI(on) {
   $("connectBtn").disabled = on;
   $("disconnectBtn").disabled = !on;
   $("sendBtn").disabled = !(on && state.path.length);
+  if (on) unlockStep("stepCalibrate");
 }
 
-function updatePosition(axis, delta) {
-  const [min, max] = state.limits[axis];
-  state.pos[axis] = Math.max(min, Math.min(max, state.pos[axis] + delta));
-  $(`${axis}pos`).textContent = `${axis.toUpperCase()} = ${state.pos[axis]}`;
+// --- Flujo por pasos: desbloquear / avanzar ---
+function unlockStep(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove("is-locked");
+}
+function scrollToStep(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// La posición que muestra la UI y que se usa para fijar límites debe ser la
+// REAL de máquina (machinePos), no un contador aparte. Mapeo eje->campo.
+function machineAxisValue(axis) {
+  const field = FIELD_MAP[axis].field; // "A" | "B"
+  return machinePos[field];
+}
+function refreshPosLabels() {
+  $("xpos").textContent = `X = ${machineAxisValue("x")}`;
+  $("ypos").textContent = `Y = ${machineAxisValue("y")}`;
 }
 
 document.querySelectorAll("[data-jog]").forEach(btn => {
   btn.addEventListener("click", async () => {
     const axis = btn.dataset.jog;
     const dir = Number(btn.dataset.dir);
-    updatePosition(axis, dir * 10);
-    await ble.sendMove(axis, dir);
+    await ble.sendMove(axis, dir); // mueve machinePos y envía el frame
+    refreshPosLabels();            // la UI refleja la posición real
   });
 });
 
@@ -355,6 +375,26 @@ $("penDown").onclick = async () => {
   state.pen = true; $("penState").textContent = "Abajo"; await ble.pen(false);
 };
 
+// Deslizadores de calibración del lápiz. Al moverlos, actualizan penState,
+// lo guardan, y re-mandan la posición actual para que veas el efecto en vivo.
+$("penUpVal").value = penState.up;
+$("penUpValOut").textContent = penState.up;
+$("penDownVal").value = penState.down;
+$("penDownValOut").textContent = penState.down;
+
+$("penUpVal").oninput = async (e) => {
+  penState.up = Number(e.target.value);
+  $("penUpValOut").textContent = penState.up;
+  localStorage.setItem("mk13181-pen-up", penState.up);
+  if (!state.pen) await ble.pen(true); // si está arriba, mostrar el cambio ya
+};
+$("penDownVal").oninput = async (e) => {
+  penState.down = Number(e.target.value);
+  $("penDownValOut").textContent = penState.down;
+  localStorage.setItem("mk13181-pen-down", penState.down);
+  if (state.pen) await ble.pen(false); // si está abajo, mostrar el cambio ya
+};
+
 function loadCalibration() {
   const c = JSON.parse(localStorage.getItem("mk13181-calibration") || "null");
   if (!c) return;
@@ -364,8 +404,22 @@ function loadCalibration() {
   $("xmax").value = state.limits.x[1];
   $("ymin").value = state.limits.y[0];
   $("ymax").value = state.limits.y[1];
-  updatePosition("x", 0); updatePosition("y", 0);
+  refreshPosLabels();
+  // Ya hay calibración previa: destrabar el paso de dibujo desde el arranque.
+  unlockStep("stepImage");
 }
+// Botones "Fijar mín/máx": toman la posición actual del eje y la ponen en el
+// campo correspondiente. Así no tenés que anotar números a mano.
+document.querySelectorAll("[data-fix]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const target = btn.dataset.fix; // xmin | xmax | ymin | ymax
+    const axis = target[0];         // x | y
+    const val = machineAxisValue(axis);
+    $(target).value = val;
+    log(`${target} fijado en ${val}`);
+  });
+});
+
 function saveCalibration() {
   state.limits.x = [Number($("xmin").value), Number($("xmax").value)];
   state.limits.y = [Number($("ymin").value), Number($("ymax").value)];
@@ -373,6 +427,9 @@ function saveCalibration() {
     limits: state.limits, pos: state.pos
   }));
   log("Calibración guardada.");
+  $("calibOk").hidden = false;
+  unlockStep("stepImage");
+  scrollToStep("stepImage");
 }
 $("saveCalibration").onclick = saveCalibration;
 $("resetCalibration").onclick = () => {
@@ -466,6 +523,10 @@ $("vectorizeBtn").onclick = () => {
   $("simulateBtn").disabled = !state.path.length;
   $("sendBtn").disabled = !(ble.connected && state.path.length);
   log(`Trazado preparado: ${state.path.length} comandos.`);
+  if (state.path.length) {
+    unlockStep("stepSend");
+    scrollToStep("stepSend");
+  }
 };
 
 $("simulateBtn").onclick = async () => {

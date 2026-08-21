@@ -15,117 +15,133 @@
 </header>
 
 <main>
-  <section class="card">
-    <h2>1. Bluetooth</h2>
+
+  <!-- PASO 1 -->
+  <section class="card step" id="stepConnect" data-step="1">
+    <div class="step-head"><span class="step-num">1</span><h2>Conectar</h2></div>
     <button id="connectBtn">Conectar</button>
     <button id="disconnectBtn" disabled>Desconectar</button>
-    <p id="bleInfo">
-      Al conectar se reproduce automáticamente la secuencia de arranque real
-      capturada. El mapeo de movimiento todavía no está confirmado — usá la
-      consola de abajo para probarlo con cuidado, un comando a la vez.
-    </p>
+    <p id="bleInfo">Encendé el plotter y tocá Conectar. Al conectar se hace solo el arranque del módulo.</p>
+  </section>
+
+  <!-- PASO 2 -->
+  <section class="card step is-locked" id="stepCalibrate" data-step="2">
+    <div class="step-head"><span class="step-num">2</span><h2>Calibrar</h2></div>
+    <p class="lock-msg">Conectá primero para desbloquear este paso.</p>
+    <div class="step-body">
+      <p>Movés cada eje hasta su extremo real y tocás <b>Fijar</b> para guardar ese límite. El cabezal arranca en el centro, así vas para los dos lados.</p>
+
+      <div class="axis">
+        <h3>Eje X</h3>
+        <div class="jog">
+          <button data-jog="x" data-dir="-1">&larr;</button>
+          <button data-jog="x" data-dir="1">&rarr;</button>
+        </div>
+        <div class="limit-set">
+          <button class="mini" data-fix="xmin">Fijar mín</button>
+          <input id="xmin" type="number" value="0">
+          <button class="mini" data-fix="xmax">Fijar máx</button>
+          <input id="xmax" type="number" value="61000">
+          <output id="xpos">X = 0</output>
+        </div>
+      </div>
+
+      <div class="axis">
+        <h3>Eje Y</h3>
+        <div class="jog">
+          <button data-jog="y" data-dir="-1">&uarr;</button>
+          <button data-jog="y" data-dir="1">&darr;</button>
+        </div>
+        <div class="limit-set">
+          <button class="mini" data-fix="ymin">Fijar mín</button>
+          <input id="ymin" type="number" value="0">
+          <button class="mini" data-fix="ymax">Fijar máx</button>
+          <input id="ymax" type="number" value="61000">
+          <output id="ypos">Y = 0</output>
+        </div>
+      </div>
+
+      <div class="axis">
+        <h3>Lápiz</h3>
+        <button id="penUp">Subir</button>
+        <button id="penDown">Bajar</button>
+        <output id="penState">Arriba</output>
+        <p class="hint">La leva es rotativa: buscá dos puntos cercanos. Movés el deslizador y tocás Subir/Bajar para probar. Cuando apenas despega (arriba) y apenas apoya (abajo), quedan guardados.</p>
+        <label>Valor arriba
+          <input id="penUpVal" type="range" min="0" max="8000" step="100" value="1500">
+          <output id="penUpValOut">1500</output>
+        </label>
+        <label>Valor abajo
+          <input id="penDownVal" type="range" min="0" max="8000" step="100" value="3000">
+          <output id="penDownValOut">3000</output>
+        </label>
+      </div>
+
+      <button id="saveCalibration" class="primary">Guardar calibración y seguir</button>
+      <button id="resetCalibration" class="secondary">Restablecer</button>
+      <p class="ok-msg" id="calibOk" hidden>✓ Calibración guardada.</p>
+    </div>
+  </section>
+
+  <!-- PASO 3 -->
+  <section class="card step is-locked" id="stepImage" data-step="3">
+    <div class="step-head"><span class="step-num">3</span><h2>Cargar dibujo</h2></div>
+    <p class="lock-msg">Guardá la calibración para desbloquear este paso.</p>
+    <div class="step-body">
+      <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp">
+      <div class="preview-wrap">
+        <canvas id="preview" width="600" height="400"></canvas>
+      </div>
+      <label>Umbral
+        <input id="threshold" type="range" min="0" max="255" value="180">
+        <output id="thresholdValue">180</output>
+      </label>
+      <label>Escala (%)
+        <input id="scale" type="range" min="10" max="100" value="80">
+        <output id="scaleValue">80%</output>
+      </label>
+      <button id="vectorizeBtn" class="primary" disabled>Preparar trazado</button>
+    </div>
+  </section>
+
+  <!-- PASO 4 -->
+  <section class="card step is-locked" id="stepSend" data-step="4">
+    <div class="step-head"><span class="step-num">4</span><h2>Enviar</h2></div>
+    <p class="lock-msg">Prepará un trazado para desbloquear este paso.</p>
+    <div class="step-body">
+      <div id="plotInfo">No hay trazado preparado.</div>
+      <button id="simulateBtn" disabled>Simular movimientos</button>
+      <button id="sendBtn" class="primary" disabled>Enviar al plotter</button>
+    </div>
   </section>
 
   <section class="card">
-    <h2>1.5. Consola BLE (crudo)</h2>
-    <p>
-      Mandá comandos de texto tal cual, en el formato <code>T&lt;código&gt;W</code>
-      visto en la captura. Cada respuesta y cada envío quedan en el log de
-      abajo. Ideal para aislar el mapeo de movimiento: movés un eje de a un
-      paso chico en la app oficial mientras esta consola está conectada en
-      paralelo, y comparás qué cambió.
-    </p>
+    <h2>Registro</h2>
+    <pre id="log"></pre>
+  </section>
+
+  <details class="card advanced">
+    <summary>Consola avanzada (comandos crudos)</summary>
+    <p class="hint">Solo si sabés lo que hacés. Comandos en formato <code>T&lt;código&gt;W</code>.</p>
     <div class="console-row">
       <input id="rawCmd" type="text" placeholder="p.ej. T1440000000..." spellcheck="false">
       <button id="rawSendBtn">Enviar</button>
     </div>
     <div class="console-row">
-      <span class="console-label">Réplicas capturadas:</span>
+      <span class="console-label">Réplicas:</span>
       <button class="chip" data-replay="T041AABBW">handshake 1</button>
       <button class="chip" data-replay="T00CW">handshake 2</button>
       <button class="chip" data-replay="T006W">status</button>
       <button class="chip" data-replay="T01F1W">handshake 3</button>
     </div>
-
     <div class="console-row">
       <span class="console-label">Identificar motores:</span>
-      <button class="chip" data-probe="A">probar campo A</button>
-      <button class="chip" data-probe="B">probar campo B</button>
-      <button class="chip" data-probe="C">probar campo C</button>
+      <button class="chip" data-probe="A">campo A</button>
+      <button class="chip" data-probe="B">campo B</button>
+      <button class="chip" data-probe="C">campo C</button>
     </div>
-    <p class="hint">
-      Apretá cada uno con el plotter conectado y anotá qué motor se mueve
-      (A/B/C → X / Y / lápiz). Ajustá <code>FIELD_MAP</code> en
-      <code>app.js</code> y poné <code>FIELD_MAP_CONFIRMED = true</code>.
-      Hasta entonces el jog, el lápiz y el envío solo escriben en el log,
-      no mueven el plotter — es la red de seguridad para no mandar un
-      movimiento al motor equivocado.
-    </p>
-  </section>
+  </details>
 
-  <section class="card">
-    <h2>2. Calibración</h2>
-    <p>Mové cada eje con los botones para encontrar los límites reales de tu unidad. El cabezal arranca en el centro del recorrido, así podés ir para los dos lados. Llevá cada eje a su extremo y anotá los valores en Mín/Máx, después Guardar calibración.</p>
-
-    <div class="axis">
-      <h3>Eje X</h3>
-      <div class="jog">
-        <button data-jog="x" data-dir="-1">←</button>
-        <button data-jog="x" data-dir="1">→</button>
-      </div>
-      <label>Mín <input id="xmin" type="number" value="0"></label>
-      <label>Máx <input id="xmax" type="number" value="1000"></label>
-      <output id="xpos">X = 0</output>
-    </div>
-
-    <div class="axis">
-      <h3>Eje Y</h3>
-      <div class="jog">
-        <button data-jog="y" data-dir="-1">↑</button>
-        <button data-jog="y" data-dir="1">↓</button>
-      </div>
-      <label>Mín <input id="ymin" type="number" value="0"></label>
-      <label>Máx <input id="ymax" type="number" value="1000"></label>
-      <output id="ypos">Y = 0</output>
-    </div>
-
-    <div class="axis">
-      <h3>Lápiz</h3>
-      <button id="penUp">Subir</button>
-      <button id="penDown">Bajar</button>
-      <output id="penState">Arriba</output>
-    </div>
-
-    <button id="saveCalibration">Guardar calibración</button>
-    <button id="resetCalibration" class="secondary">Restablecer</button>
-  </section>
-
-  <section class="card">
-    <h2>3. Imagen</h2>
-    <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp">
-    <div class="preview-wrap">
-      <canvas id="preview" width="600" height="400"></canvas>
-    </div>
-    <label>
-      Umbral
-      <input id="threshold" type="range" min="0" max="255" value="180">
-      <output id="thresholdValue">180</output>
-    </label>
-    <label>
-      Escala (%)
-      <input id="scale" type="range" min="10" max="100" value="80">
-      <output id="scaleValue">80%</output>
-    </label>
-    <button id="vectorizeBtn" disabled>Preparar trazado</button>
-  </section>
-
-  <section class="card">
-    <h2>4. Trazado</h2>
-    <div id="plotInfo">No hay trazado preparado.</div>
-    <button id="simulateBtn" disabled>Simular movimientos</button>
-    <button id="sendBtn" disabled>Enviar al plotter</button>
-    <pre id="log"></pre>
-  </section>
 </main>
 
 <script src="app.js"></script>
