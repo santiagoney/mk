@@ -74,8 +74,8 @@ const MK_HANDSHAKE = ["T041AABBW", "T00CW", "T006W", "T01F1W"];
 // Conjetura de mapeo campo->eje. VERIFICAR con los botones de la consola y
 // corregir acá. field: "A" | "B" | "C". invert: si el motor va al revés.
 const FIELD_MAP = {
-  x: { field: "B", invert: false },
-  y: { field: "A", invert: true },
+  x: { field: "B", invert: true },
+  y: { field: "A", invert: false },
   pen: { field: "C", invert: false },
 };
 // Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
