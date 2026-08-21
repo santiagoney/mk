@@ -94,25 +94,46 @@ const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 // Confirmado: mandar A=8000 B=8000 frena ambos ejes.
 // El lápiz (campo C) tiene su reposo en 0 y se maneja aparte (leva rotativa).
 // ============================================================
-const VEL_STOP = 0x8000;        // 32768 — velocidad cero (quieto)
-// La respuesta del motor NO es simétrica: un sentido acelera más que el otro
-// con la misma magnitud. Guardamos la magnitud de velocidad por EJE y por
-// SENTIDO, ajustable en vivo con deslizadores (se guarda en localStorage).
-// pos = sentido positivo del jog (dir=+1), neg = sentido negativo (dir=-1).
+// ============================================================
+// MODELO DE VELOCIDAD — CORREGIDO leyendo la captura de nuevo:
+// El reposo (quieto) es 0, NO 0x8000. El sentido se parte por 0x8000:
+//   valor = 0                -> QUIETO (reposo, a donde vuelve al soltar)
+//   valor 0x0001..0x7FFF     -> sentido "+" ; velocidad = valor
+//   valor 0x8000..0xFFFF     -> sentido "-" ; velocidad = valor - 0x8000
+// Confirmado: en la captura cada ráfaga se queda entera en una mitad y
+// siempre vuelve a 0 al soltar. 0x8000 nunca aparece como "quieto".
+// Para una velocidad v (1..32767) en un sentido:
+//   sentido + :  frame = v
+//   sentido - :  frame = 0x8000 + v
+//   frenar    :  frame = 0
+// ============================================================
+const VEL_REST = 0x0000;        // reposo / quieto
+const DIR_OFFSET = 0x8000;      // sumar esto = sentido opuesto
+const VEL_MAX_MAG = 0x7000;     // magnitud máxima de velocidad usable (~28672)
+
+/** Convierte (sentido, magnitud) al valor de campo correcto.
+ * sign: +1 usa la mitad baja; -1 usa la mitad alta (0x8000+v). */
+function velToField(sign, magnitude) {
+  const m = Math.max(0, Math.min(VEL_MAX_MAG, Math.round(magnitude)));
+  if (m === 0) return VEL_REST;
+  return sign >= 0 ? m : (DIR_OFFSET + m);
+}
+
+// Magnitud de velocidad para el jog, por eje y sentido (ajustable en vivo).
 const jogSpeed = {
   x: {
-    pos: Number(localStorage.getItem("mk13181-js-xpos") || 3000),
-    neg: Number(localStorage.getItem("mk13181-js-xneg") || 3000),
+    pos: Number(localStorage.getItem("mk13181-js-xpos") || 8000),
+    neg: Number(localStorage.getItem("mk13181-js-xneg") || 8000),
   },
   y: {
-    pos: Number(localStorage.getItem("mk13181-js-ypos") || 3000),
-    neg: Number(localStorage.getItem("mk13181-js-yneg") || 3000),
+    pos: Number(localStorage.getItem("mk13181-js-ypos") || 8000),
+    neg: Number(localStorage.getItem("mk13181-js-yneg") || 8000),
   },
 };
 const JOG_MS = 400;             // duración del pulso
 const PEN_MS = 350;             // duración del pulso del lápiz (leva)
 // Nota: el módulo mantiene la última velocidad hasta el próximo frame, por eso
-// cada jog frena solo al final mandando VEL_STOP.
+// cada jog frena solo al final mandando 0 (reposo).
 
 const penState = {
   up: Number(localStorage.getItem("mk13181-pen-up") || 1500),
@@ -131,7 +152,7 @@ function buildMoveFrame(a, b, c) {
 
 // Estado de velocidad actual de cada campo. A/B arrancan QUIETOS (centro),
 // C (lápiz) arranca en su valor "arriba".
-const machineVel = { A: VEL_STOP, B: VEL_STOP, C: VEL_STOP };
+const machineVel = { A: VEL_REST, B: VEL_REST, C: VEL_REST };
 
 // Posición ESTIMADA a lazo abierto (para mostrar y para fijar límites).
 // Como el control es por velocidad+tiempo, esto es aproximado: cuenta cuánto
@@ -259,32 +280,28 @@ class MKBleAdapter {
     await this.sendRawCommand(frame);
   }
 
-  /** Frena todos los motores: los tres campos al centro (quieto). */
+  /** Frena todos los motores: los tres campos a reposo (0). */
   async stopAll() {
-    machineVel.A = VEL_STOP;
-    machineVel.B = VEL_STOP;
-    machineVel.C = VEL_STOP;
+    machineVel.A = VEL_REST;
+    machineVel.B = VEL_REST;
+    machineVel.C = VEL_REST;
     await this._emitFrame();
   }
 
-  /** Prueba de identificación: da un pulso de velocidad a UN campo y frena.
-   * Para A/B el reposo es el centro; el pulso se aleja del centro. */
+  /** Prueba de identificación: da un pulso a UN campo (sentido +) y frena. */
   async probeField(field, ms = 500) {
     if (!this.connected) return log("conectá primero.");
-    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = VEL_STOP;
-    machineVel[field] = VEL_STOP + 4000; // alejarse del centro (todos centrados)
+    machineVel.A = VEL_REST; machineVel.B = VEL_REST; machineVel.C = VEL_REST;
+    machineVel[field] = velToField(+1, 8000); // pulso sentido + a media velocidad
     log(`probando campo ${field} (mirá qué motor se mueve)`);
     await this._emitFrame();
     await new Promise((r) => setTimeout(r, ms));
-    // frenar todo al centro
-    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = VEL_STOP;
+    machineVel.A = VEL_REST; machineVel.B = VEL_REST; machineVel.C = VEL_REST;
     await this._emitFrame();
   }
 
-  /** Jog SEGURO por pulso de duración fija a velocidad baja constante.
-   * Cada toque: arranca desde quieto, mueve a velocidad baja durante JOG_MS,
-   * y frena SOLO. Nunca se escapa (a diferencia del acumulador). El sentido
-   * lo da la distancia al centro (por debajo/por encima de VEL_STOP). */
+  /** Jog SEGURO: pulso de duración fija y frena solo (reposo = 0).
+   * El sentido se codifica con velToField (mitad baja / mitad alta). */
   async sendMove(axis, direction) {
     if (!FIELD_MAP_CONFIRMED) {
       log(`MOVE ${axis} dir=${direction} — confirmá FIELD_MAP primero. No se envía.`);
@@ -292,24 +309,20 @@ class MKBleAdapter {
     }
     const { field, invert } = FIELD_MAP[axis];
     const sign = direction * (invert ? -1 : 1);
-    // velocidad según el BOTÓN (direction), así el deslizador coincide con lo
-    // que ves en pantalla: dir=+1 usa .pos, dir=-1 usa .neg
     const speed = direction > 0 ? jogSpeed[axis].pos : jogSpeed[axis].neg;
-    // arrancar garantizado desde reposo, mover a velocidad baja fija, frenar
-    machineVel[field] = VEL_STOP + sign * speed;
+    machineVel[field] = velToField(sign, speed);
     await this._emitFrame();
     await new Promise((r) => setTimeout(r, JOG_MS));
-    machineVel[field] = VEL_STOP;
+    machineVel[field] = VEL_REST; // frenar
     await this._emitFrame();
     estPos[axis] += sign * 1;
   }
 
-  /** Movimiento continuo hacia un sentido a una velocidad dada (para dibujo).
-   * No frena solo: hay que llamar stopAll() o setVel(centro) después. */
-  async setAxisVel(axis, signedSpeed) {
+  /** Fija velocidad continua en un eje (para dibujo). No frena solo. */
+  async setAxisVel(axis, sign, magnitude) {
     const { field, invert } = FIELD_MAP[axis];
-    const s = invert ? -signedSpeed : signedSpeed;
-    machineVel[field] = VEL_STOP + s;
+    const s = invert ? -sign : sign;
+    machineVel[field] = velToField(s, magnitude);
     await this._emitFrame();
   }
 
@@ -319,14 +332,12 @@ class MKBleAdapter {
       return;
     }
     const { field } = FIELD_MAP.pen;
-    // El motor del lápiz es velocidad con signo centrada en VEL_STOP, igual que
-    // X/Y. Antes los dos valores eran positivos y por eso giraba siempre para
-    // el mismo lado. Ahora "subir" va por debajo del centro y "bajar" por
-    // encima (pulso corto y frena al centro). penState guarda la MAGNITUD.
-    machineVel[field] = up ? VEL_STOP - penState.up : VEL_STOP + penState.down;
+    // Reposo del lápiz = 0. "subir" = sentido -, "bajar" = sentido +.
+    // penState guarda la magnitud de cada uno. Pulso corto y frena.
+    machineVel[field] = up ? velToField(-1, penState.up) : velToField(+1, penState.down);
     await this._emitFrame();
     await new Promise((r) => setTimeout(r, PEN_MS));
-    machineVel[field] = VEL_STOP; // frenar la leva al centro
+    machineVel[field] = VEL_REST; // frenar la leva
     await this._emitFrame();
   }
 
