@@ -74,8 +74,8 @@ const MK_HANDSHAKE = ["T041AABBW", "T00CW", "T006W", "T01F1W"];
 // Conjetura de mapeo campo->eje. VERIFICAR con los botones de la consola y
 // corregir acá. field: "A" | "B" | "C". invert: si el motor va al revés.
 const FIELD_MAP = {
-  x: { field: "A", invert: false },
-  y: { field: "B", invert: false },
+  x: { field: "B", invert: false },
+  y: { field: "A", invert: false },
   pen: { field: "C", invert: false },
 };
 // Poné esto en true SOLO después de confirmar con "probar campo A/B/C" que
@@ -85,17 +85,27 @@ let FIELD_MAP_CONFIRMED = true;
 
 const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 
-// El lápiz lo mueve una LEVA ROTATIVA, no un actuador lineal: dos posiciones
-// muy cercanas entre sí (si te pasás, la leva sigue girando y vuelve). Por eso
-// arriba/abajo son valores CHICOS y próximos, ajustables en vivo desde la app
-// con los deslizadores. Se guardan en localStorage.
+// ============================================================
+// MODELO DE MOVIMIENTO — CONFIRMADO empíricamente (no es posición):
+// Los campos A y B son VELOCIDAD CON SIGNO centrada en 0x8000 (32768):
+//   valor = 32768  -> motor QUIETO
+//   valor < 32768  -> gira en un sentido (más lejos del centro = más rápido)
+//   valor > 32768  -> gira en el sentido opuesto
+// Confirmado: mandar A=8000 B=8000 frena ambos ejes.
+// El lápiz (campo C) tiene su reposo en 0 y se maneja aparte (leva rotativa).
+// ============================================================
+const VEL_STOP = 0x8000;        // 32768 — velocidad cero (quieto)
+const JOG_STEP = 2000;          // cuánto cambia la velocidad por cada toque
+const VEL_MIN = 0x2000;         // 8192  — tope de velocidad hacia un lado
+const VEL_MAX = 0xE000;         // 57344 — tope de velocidad hacia el otro
+// (los topes evitan saltar al extremo del rango de golpe; ajustables)
+
 const penState = {
   up: Number(localStorage.getItem("mk13181-pen-up") || 1500),
   down: Number(localStorage.getItem("mk13181-pen-down") || 3000),
 };
 
-/** Construye un frame de movimiento absoluto a partir de 3 posiciones
- * (0..65535). Estructura confirmada por la captura. */
+/** Construye un frame con los tres campos (velocidad A/B, lápiz C). */
 function buildMoveFrame(a, b, c) {
   const h = (n) =>
     Math.max(0, Math.min(MK_MAX, Math.round(n)))
@@ -105,13 +115,14 @@ function buildMoveFrame(a, b, c) {
   return `T1440${h(a)}0${h(b)}0${h(c)}00000W`;
 }
 
-/** Posición absoluta actual de cada campo, como la manda el módulo.
- * X e Y arrancan en el CENTRO del recorrido (no en 0), si no los botones
- * de dirección negativa (izquierda / arriba / subir) no tienen para dónde
- * ir: quedan chocando contra el piso 0 y no se mueven. El lápiz (C) sí
- * arranca en 0 = arriba. */
-const HOME_CENTER = Math.round(MK_MAX / 2); // ~32767
-const machinePos = { A: HOME_CENTER, B: HOME_CENTER, C: 0 };
+// Estado de velocidad actual de cada campo. A/B arrancan QUIETOS (centro),
+// C (lápiz) arranca en su valor "arriba".
+const machineVel = { A: VEL_STOP, B: VEL_STOP, C: 0 };
+
+// Posición ESTIMADA a lazo abierto (para mostrar y para fijar límites).
+// Como el control es por velocidad+tiempo, esto es aproximado: cuenta cuánto
+// nos movimos en cada pulso de jog. Sirve para calibrar extremos relativos.
+const estPos = { x: 0, y: 0 };
 
 function fieldFor(axis) {
   return FIELD_MAP[axis].field;
@@ -228,45 +239,61 @@ class MKBleAdapter {
     await this._writeRaw(new TextEncoder().encode(text));
   }
 
-  /** Escribe el frame que refleja machinePos actual. */
+  /** Emite un frame con las velocidades actuales de A/B y el valor del lápiz C. */
   async _emitFrame() {
-    const frame = buildMoveFrame(machinePos.A, machinePos.B, machinePos.C);
+    const frame = buildMoveFrame(machineVel.A, machineVel.B, machineVel.C);
     await this.sendRawCommand(frame);
   }
 
-  /** Prueba de identificación: mueve UN campo (A/B/C) una cantidad chica y
-   * vuelve a 0, para que veas a ojo qué motor responde. No depende de
-   * FIELD_MAP — es justamente lo que se usa para armarlo. */
-  async probeField(field, amount = 8000) {
-    if (!this.connected) return log("conectá primero.");
-    const prev = { ...machinePos };
-    machinePos.A = machinePos.B = machinePos.C = 0;
-    machinePos[field] = amount;
-    log(`probando campo ${field} -> ${amount} (mirá qué motor se mueve)`);
+  /** Frena todos los motores: A/B al centro (quieto), C a reposo arriba. */
+  async stopAll() {
+    machineVel.A = VEL_STOP;
+    machineVel.B = VEL_STOP;
     await this._emitFrame();
-    await new Promise((r) => setTimeout(r, 600));
-    machinePos[field] = 0;
-    await this._emitFrame();
-    Object.assign(machinePos, prev);
   }
 
-  async sendMove(axis, direction, step = 3000) {
+  /** Prueba de identificación: da un pulso de velocidad a UN campo y frena.
+   * Para A/B el reposo es el centro; el pulso se aleja del centro. */
+  async probeField(field, ms = 500) {
+    if (!this.connected) return log("conectá primero.");
+    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = 0;
+    if (field === "C") {
+      machineVel.C = 4000; // pulso al lápiz
+    } else {
+      machineVel[field] = VEL_STOP + 4000; // alejarse del centro
+    }
+    log(`probando campo ${field} (mirá qué motor se mueve)`);
+    await this._emitFrame();
+    await new Promise((r) => setTimeout(r, ms));
+    // frenar
+    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = 0;
+    await this._emitFrame();
+  }
+
+  /** Jog por ACUMULADOR DE VELOCIDAD. El módulo mantiene la última velocidad
+   * recibida hasta el próximo frame (no son pulsos de tiempo). Cada toque
+   * suma o resta un escalón desde el centro. Para frenar, se vuelve al centro
+   * escalón por escalón (o con el botón Frenar). */
+  async sendMove(axis, direction) {
     if (!FIELD_MAP_CONFIRMED) {
-      log(`MOVE ${axis} dir=${direction} — confirmá FIELD_MAP primero (consola: probar campos). No se envía.`);
+      log(`MOVE ${axis} dir=${direction} — confirmá FIELD_MAP primero. No se envía.`);
       return;
     }
     const { field, invert } = FIELD_MAP[axis];
-    const delta = direction * step * (invert ? -1 : 1);
-    machinePos[field] = Math.max(0, Math.min(MK_MAX, machinePos[field] + delta));
+    const sign = direction * (invert ? -1 : 1);
+    const next = machineVel[field] + sign * JOG_STEP;
+    // límites del campo, sin cruzar de un extremo al otro de golpe
+    machineVel[field] = Math.max(VEL_MIN, Math.min(VEL_MAX, next));
     await this._emitFrame();
+    estPos[axis] += sign * 1;
   }
 
-  /** Mueve a una posición absoluta de máquina (A/B para X/Y). */
-  async moveToMachine(a, b) {
-    if (!FIELD_MAP_CONFIRMED) return;
-    const fx = fieldFor("x"), fy = fieldFor("y");
-    machinePos[fx] = Math.max(0, Math.min(MK_MAX, a));
-    machinePos[fy] = Math.max(0, Math.min(MK_MAX, b));
+  /** Movimiento continuo hacia un sentido a una velocidad dada (para dibujo).
+   * No frena solo: hay que llamar stopAll() o setVel(centro) después. */
+  async setAxisVel(axis, signedSpeed) {
+    const { field, invert } = FIELD_MAP[axis];
+    const s = invert ? -signedSpeed : signedSpeed;
+    machineVel[field] = VEL_STOP + s;
     await this._emitFrame();
   }
 
@@ -276,28 +303,20 @@ class MKBleAdapter {
       return;
     }
     const { field } = FIELD_MAP.pen;
-    // Dos posiciones cercanas de la leva rotativa, ajustables desde la app.
-    machinePos[field] = up ? penState.up : penState.down;
+    // Pulso corto de la leva hacia arriba/abajo y frenar (reposo del lápiz = 0).
+    machineVel[field] = up ? penState.up : penState.down;
+    await this._emitFrame();
+    await new Promise((r) => setTimeout(r, 300));
+    machineVel[field] = 0; // frenar la leva
     await this._emitFrame();
   }
 
   async sendPath(path) {
-    if (!FIELD_MAP_CONFIRMED) {
-      log("Envío bloqueado: confirmá FIELD_MAP antes de mandar un trazado completo.");
-      return;
-    }
-    log(`enviando ${path.length} comandos…`);
-    for (const p of path) {
-      if (p.type === "pen") {
-        await this.pen(!p.down);
-      } else {
-        await this.moveToMachine(p.a, p.b);
-      }
-      // ritmo similar al de la app oficial (~100 ms entre frames)
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    await this.pen(true);
-    log("trazado enviado.");
+    // El control es por VELOCIDAD+TIEMPO a lazo abierto, así que un trazado
+    // fiel todavía necesita calibrar cuántos ms = cuánta distancia. Por ahora
+    // este envío queda deshabilitado para no dibujar cualquier cosa: primero
+    // hay que resolver la conversión distancia->tiempo (ver nota en el chat).
+    log("Envío de dibujo pausado: el control es por velocidad, falta calibrar tiempo↔distancia. El jog y el lápiz ya funcionan.");
   }
 }
 
@@ -322,11 +341,10 @@ function scrollToStep(id) {
   if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-// La posición que muestra la UI y que se usa para fijar límites debe ser la
-// REAL de máquina (machinePos), no un contador aparte. Mapeo eje->campo.
+// La posición es ESTIMADA a lazo abierto (el control es por velocidad, no hay
+// feedback real). Cuenta pasos de jog. Sirve para fijar límites relativos.
 function machineAxisValue(axis) {
-  const field = FIELD_MAP[axis].field; // "A" | "B"
-  return machinePos[field];
+  return estPos[axis];
 }
 function refreshPosLabels() {
   $("xpos").textContent = `X = ${machineAxisValue("x")}`;
@@ -337,10 +355,15 @@ document.querySelectorAll("[data-jog]").forEach(btn => {
   btn.addEventListener("click", async () => {
     const axis = btn.dataset.jog;
     const dir = Number(btn.dataset.dir);
-    await ble.sendMove(axis, dir); // mueve machinePos y envía el frame
+    await ble.sendMove(axis, dir); // pulso de velocidad y frena
     refreshPosLabels();            // la UI refleja la posición real
   });
 });
+
+$("stopBtn").onclick = async () => {
+  await ble.stopAll();
+  log("FRENADO: ejes al centro.");
+};
 
 $("connectBtn").onclick = async () => {
   try { await ble.connect(); }

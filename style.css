@@ -119,3 +119,11 @@ button.primary:disabled { background: #444; color: #999; }
 
 details.advanced { margin-top: 6px; }
 details.advanced summary { cursor: pointer; color: #aaa; font-size: 0.95rem; padding: 4px 0; }
+
+button.stop {
+  display: block; width: 100%; margin: 12px 0;
+  background: #d33; color: #fff; border: none;
+  font-size: 1.1rem; font-weight: 700; padding: 16px;
+  border-radius: 10px;
+}
+button.stop:active { background: #a11; }
