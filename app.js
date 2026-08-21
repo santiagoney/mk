@@ -95,8 +95,14 @@ const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 // El lápiz (campo C) tiene su reposo en 0 y se maneja aparte (leva rotativa).
 // ============================================================
 const VEL_STOP = 0x8000;        // 32768 — velocidad cero (quieto)
-const JOG_SPEED = 3000;         // qué tan lejos del centro (velocidad del pulso)
-const JOG_MS = 400;             // duración del pulso; a velocidad baja mueve poco
+// La respuesta del motor NO es simétrica: un sentido acelera más que el otro
+// con la misma magnitud. Por eso la velocidad del pulso se define por SENTIDO.
+// sign = +1 (campo por encima del centro) y sign = -1 (por debajo).
+// Ajustá estos dos hasta que los dos sentidos se muevan parejo.
+const JOG_SPEED_POS = 3000;     // magnitud cuando sign = +1
+const JOG_SPEED_NEG = 3000;     // magnitud cuando sign = -1
+const JOG_MS = 400;             // duración del pulso
+const PEN_MS = 350;             // duración del pulso del lápiz (leva)
 // Nota: el módulo mantiene la última velocidad hasta el próximo frame, por eso
 // cada jog frena solo al final mandando VEL_STOP.
 
@@ -117,7 +123,7 @@ function buildMoveFrame(a, b, c) {
 
 // Estado de velocidad actual de cada campo. A/B arrancan QUIETOS (centro),
 // C (lápiz) arranca en su valor "arriba".
-const machineVel = { A: VEL_STOP, B: VEL_STOP, C: 0 };
+const machineVel = { A: VEL_STOP, B: VEL_STOP, C: VEL_STOP };
 
 // Posición ESTIMADA a lazo abierto (para mostrar y para fijar límites).
 // Como el control es por velocidad+tiempo, esto es aproximado: cuenta cuánto
@@ -245,10 +251,11 @@ class MKBleAdapter {
     await this.sendRawCommand(frame);
   }
 
-  /** Frena todos los motores: A/B al centro (quieto), C a reposo arriba. */
+  /** Frena todos los motores: los tres campos al centro (quieto). */
   async stopAll() {
     machineVel.A = VEL_STOP;
     machineVel.B = VEL_STOP;
+    machineVel.C = VEL_STOP;
     await this._emitFrame();
   }
 
@@ -256,17 +263,13 @@ class MKBleAdapter {
    * Para A/B el reposo es el centro; el pulso se aleja del centro. */
   async probeField(field, ms = 500) {
     if (!this.connected) return log("conectá primero.");
-    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = 0;
-    if (field === "C") {
-      machineVel.C = 4000; // pulso al lápiz
-    } else {
-      machineVel[field] = VEL_STOP + 4000; // alejarse del centro
-    }
+    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = VEL_STOP;
+    machineVel[field] = VEL_STOP + 4000; // alejarse del centro (todos centrados)
     log(`probando campo ${field} (mirá qué motor se mueve)`);
     await this._emitFrame();
     await new Promise((r) => setTimeout(r, ms));
-    // frenar
-    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = 0;
+    // frenar todo al centro
+    machineVel.A = VEL_STOP; machineVel.B = VEL_STOP; machineVel.C = VEL_STOP;
     await this._emitFrame();
   }
 
@@ -281,8 +284,9 @@ class MKBleAdapter {
     }
     const { field, invert } = FIELD_MAP[axis];
     const sign = direction * (invert ? -1 : 1);
+    const speed = sign > 0 ? JOG_SPEED_POS : JOG_SPEED_NEG;
     // arrancar garantizado desde reposo, mover a velocidad baja fija, frenar
-    machineVel[field] = VEL_STOP + sign * JOG_SPEED;
+    machineVel[field] = VEL_STOP + sign * speed;
     await this._emitFrame();
     await new Promise((r) => setTimeout(r, JOG_MS));
     machineVel[field] = VEL_STOP;
@@ -305,11 +309,14 @@ class MKBleAdapter {
       return;
     }
     const { field } = FIELD_MAP.pen;
-    // Pulso corto de la leva hacia arriba/abajo y frenar (reposo del lápiz = 0).
-    machineVel[field] = up ? penState.up : penState.down;
+    // El motor del lápiz es velocidad con signo centrada en VEL_STOP, igual que
+    // X/Y. Antes los dos valores eran positivos y por eso giraba siempre para
+    // el mismo lado. Ahora "subir" va por debajo del centro y "bajar" por
+    // encima (pulso corto y frena al centro). penState guarda la MAGNITUD.
+    machineVel[field] = up ? VEL_STOP - penState.up : VEL_STOP + penState.down;
     await this._emitFrame();
-    await new Promise((r) => setTimeout(r, 300));
-    machineVel[field] = 0; // frenar la leva
+    await new Promise((r) => setTimeout(r, PEN_MS));
+    machineVel[field] = VEL_STOP; // frenar la leva al centro
     await this._emitFrame();
   }
 
