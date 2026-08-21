@@ -96,11 +96,19 @@ const MK_MAX = 0xffff; // techo del campo hex de 16 bits
 // ============================================================
 const VEL_STOP = 0x8000;        // 32768 — velocidad cero (quieto)
 // La respuesta del motor NO es simétrica: un sentido acelera más que el otro
-// con la misma magnitud. Por eso la velocidad del pulso se define por SENTIDO.
-// sign = +1 (campo por encima del centro) y sign = -1 (por debajo).
-// Ajustá estos dos hasta que los dos sentidos se muevan parejo.
-const JOG_SPEED_POS = 3000;     // magnitud cuando sign = +1
-const JOG_SPEED_NEG = 3000;     // magnitud cuando sign = -1
+// con la misma magnitud. Guardamos la magnitud de velocidad por EJE y por
+// SENTIDO, ajustable en vivo con deslizadores (se guarda en localStorage).
+// pos = sentido positivo del jog (dir=+1), neg = sentido negativo (dir=-1).
+const jogSpeed = {
+  x: {
+    pos: Number(localStorage.getItem("mk13181-js-xpos") || 3000),
+    neg: Number(localStorage.getItem("mk13181-js-xneg") || 3000),
+  },
+  y: {
+    pos: Number(localStorage.getItem("mk13181-js-ypos") || 3000),
+    neg: Number(localStorage.getItem("mk13181-js-yneg") || 3000),
+  },
+};
 const JOG_MS = 400;             // duración del pulso
 const PEN_MS = 350;             // duración del pulso del lápiz (leva)
 // Nota: el módulo mantiene la última velocidad hasta el próximo frame, por eso
@@ -284,7 +292,9 @@ class MKBleAdapter {
     }
     const { field, invert } = FIELD_MAP[axis];
     const sign = direction * (invert ? -1 : 1);
-    const speed = sign > 0 ? JOG_SPEED_POS : JOG_SPEED_NEG;
+    // velocidad según el BOTÓN (direction), así el deslizador coincide con lo
+    // que ves en pantalla: dir=+1 usa .pos, dir=-1 usa .neg
+    const speed = direction > 0 ? jogSpeed[axis].pos : jogSpeed[axis].neg;
     // arrancar garantizado desde reposo, mover a velocidad baja fija, frenar
     machineVel[field] = VEL_STOP + sign * speed;
     await this._emitFrame();
@@ -407,8 +417,25 @@ $("penDown").onclick = async () => {
   state.pen = true; $("penState").textContent = "Abajo"; await ble.pen(false);
 };
 
-// Deslizadores de calibración del lápiz. Al moverlos, actualizan penState,
-// lo guardan, y re-mandan la posición actual para que veas el efecto en vivo.
+// Deslizadores de velocidad por eje y sentido (para emparejar los lados
+// rápido/lento). Se guardan y aplican en vivo.
+function wireSpeedSlider(inputId, outId, axis, dir, storeKey) {
+  const inp = $(inputId), out = $(outId);
+  const val = jogSpeed[axis][dir];
+  inp.value = val; out.textContent = val;
+  inp.oninput = (e) => {
+    const v = Number(e.target.value);
+    jogSpeed[axis][dir] = v;
+    out.textContent = v;
+    localStorage.setItem(storeKey, v);
+  };
+}
+wireSpeedSlider("xNegSpeed", "xNegOut", "x", "neg", "mk13181-js-xneg");
+wireSpeedSlider("xPosSpeed", "xPosOut", "x", "pos", "mk13181-js-xpos");
+wireSpeedSlider("yNegSpeed", "yNegOut", "y", "neg", "mk13181-js-yneg");
+wireSpeedSlider("yPosSpeed", "yPosOut", "y", "pos", "mk13181-js-ypos");
+
+// Deslizadores de calibración del lápiz (magnitud de velocidad de la leva).
 $("penUpVal").value = penState.up;
 $("penUpValOut").textContent = penState.up;
 $("penDownVal").value = penState.down;

@@ -127,3 +127,10 @@ button.stop {
   border-radius: 10px;
 }
 button.stop:active { background: #a11; }
+
+.speed-slider {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.82rem; color: #aaa; margin-top: 6px;
+}
+.speed-slider input[type="range"] { flex: 1; accent-color: #2d6cdf; }
+.speed-slider output { width: 42px; text-align: right; color: #ddd; }
